@@ -45,3 +45,7 @@ After rebuilding, press ↻ on the extension card **and refresh the YouTube Musi
 - [WanaKana](https://github.com/WaniKani/WanaKana) (MIT)
 - Kanji readings from the Unicode [Unihan database](https://www.unicode.org/charts/unihan.html) ([Unicode License](https://www.unicode.org/license.txt))
 - Lyrics from [LRCLIB](https://lrclib.net)
+
+## License
+
+MIT, see [LICENSE](LICENSE). `src/kanji-readings.js` is derived from Unicode data under the Unicode License.

@@ -6,7 +6,7 @@
     "test": "node test.mjs && node dev/lrc-test.mjs",
     "build": "node build.mjs"
   },
-  "license": "ISC",
+  "license": "MIT",
   "devDependencies": {
     "esbuild": "^0.28.2",
     "kuromoji": "^0.1.2",
