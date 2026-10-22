@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<link rel="stylesheet" href="popup.css">
+<body>
+  <header>
+    <img src="icons/icon-32.png" alt="" width="20" height="20">
+    <h1>Romaji Lyrics</h1>
+  </header>
+
+  <div class="field">
+    <span class="label" id="mode-label">Show</span>
+    <div class="seg" role="radiogroup" aria-labelledby="mode-label" data-key="mode">
+      <button type="button" role="radio" data-value="below">Both</button>
+      <button type="button" role="radio" data-value="romaji">Romaji</button>
+      <button type="button" role="radio" data-value="off">Original</button>
+    </div>
+  </div>
+
+  <div class="field">
+    <label class="label" for="font-size">Font size <output id="font-size-value">16 px</output></label>
+    <div class="slider">
+      <span aria-hidden="true" class="a-small">A</span>
+      <input type="range" id="font-size" min="12" max="32" step="1" value="16">
+      <span aria-hidden="true" class="a-large">A</span>
+    </div>
+  </div>
+
+  <div class="field">
+    <span class="label" id="lang-label">Translate into</span>
+    <div class="seg" role="radiogroup" aria-labelledby="lang-label" data-key="lang">
+      <button type="button" role="radio" data-value="id">Indonesian</button>
+      <button type="button" role="radio" data-value="en" title="Uses Gemini Nano on this device when available">English</button>
+    </div>
+  </div>
+
+  <div class="switches">
+    <label class="switch"><span>Synced lyrics</span><input type="checkbox" data-key="synced"></label>
+    <label class="switch"><span>Translation</span><input type="checkbox" data-key="translate"></label>
+    <label class="switch"><span>Romaji song titles</span><input type="checkbox" data-key="titles"></label>
+  </div>
+
+  <p class="hint">Synced lyrics come from LRCLIB. Translation runs on this device: English uses Gemini Nano for context-aware results, Indonesian uses Chrome's translator.</p>
+  <script src="popup.js"></script>
+</body>
+</html>

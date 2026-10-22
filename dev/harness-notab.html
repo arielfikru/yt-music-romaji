@@ -1,0 +1,66 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>No-lyrics harness</title>
+<!-- A song YT Music has no lyrics for: the Lyrics tab is disabled and there is no lyrics element.
+     Query: reply=lrc|plain|none (fake LRCLIB answer), t=<seconds>. The Lyrics tab is clicked after 2 s. -->
+<style>
+  body { margin: 0; background: #030303; color: #fff; font-family: Roboto, system-ui, sans-serif; height: 100vh; }
+  ytmusic-player-page { position: absolute; top: 64px; right: 24px; width: 560px; }
+  tp-yt-paper-tabs { display: flex; border-bottom: 1px solid #333; }
+  tp-yt-paper-tab { flex: 1; text-align: center; padding: 14px 0; font-size: 14px; font-weight: 500; color: #aaa; }
+  tp-yt-paper-tab[disabled] { pointer-events: none; opacity: 0.4; }
+  tp-yt-paper-tab.iron-selected { color: #fff; box-shadow: inset 0 -2px 0 #fff; }
+  .queue { padding: 16px 0; color: #aaa; }
+  ytmusic-player-bar { position: fixed; left: 0; right: 0; bottom: 0; height: 72px; padding: 14px 24px; box-sizing: border-box; background: #212121; }
+  ytmusic-player-bar .title { display: block; }
+</style>
+<script>
+  const params = new URLSearchParams(location.search);
+  const store = { mode: "below", fontSize: 16, synced: true, translate: false, lang: "id", titles: true };
+  const listeners = [];
+  // Own sample lines, not song lyrics.
+  const LRC = "[00:01.00]私は毎朝コーヒーを飲みます\n[00:04.50]東京の空はとても青い\n[00:08.00]雨が降っても、走り続けよう";
+  const PLAIN = "私は毎朝コーヒーを飲みます\n東京の空はとても青い\n\n雨が降っても、走り続けよう";
+  const reply = params.get("reply") || "lrc";
+  window.chrome = {
+    runtime: {
+      id: "harness",
+      getURL: (p) => "/dist/" + p,
+      sendMessage: async () => (reply === "lrc" ? { lrc: LRC } : reply === "plain" ? { plain: PLAIN } : {}),
+    },
+    storage: {
+      sync: {
+        get: (defs, cb) => cb({ ...defs, ...store }),
+        set: (obj) => {
+          Object.assign(store, obj);
+          const ch = {};
+          for (const k in obj) ch[k] = { newValue: obj[k] };
+          listeners.forEach((l) => l(ch, "sync"));
+        },
+      },
+      local: { get: (k, cb) => (cb?.({}), Promise.resolve({})), set: () => Promise.resolve() },
+      onChanged: { addListener: (l) => listeners.push(l) },
+    },
+  };
+  navigator.mediaSession.metadata = new MediaMetadata({ title: "【歌ってみた】空を見上げる日 / 夜の猫 (Covered by 誰か)", artist: "someone" });
+  let fakeTime = Number(params.get("t") || 0);
+  addEventListener("DOMContentLoaded", () => {
+    const v = document.querySelector("video");
+    Object.defineProperty(v, "currentTime", { get: () => fakeTime, set: (x) => (fakeTime = x) });
+    Object.defineProperty(v, "duration", { get: () => 200 });
+  });
+  setTimeout(() => document.querySelectorAll("tp-yt-paper-tab")[1].click(), 2000);
+</script>
+<link rel="stylesheet" href="/dist/content.css">
+<video hidden></video>
+<ytmusic-player-page>
+  <tp-yt-paper-tabs>
+    <tp-yt-paper-tab class="iron-selected">BERIKUTNYA</tp-yt-paper-tab>
+    <tp-yt-paper-tab disabled aria-disabled="true">LIRIK</tp-yt-paper-tab>
+    <tp-yt-paper-tab>KOMENTAR</tp-yt-paper-tab>
+    <tp-yt-paper-tab>TERKAIT</tp-yt-paper-tab>
+  </tp-yt-paper-tabs>
+  <div class="queue">Queue content (should be covered by the lyrics panel)</div>
+</ytmusic-player-page>
+<ytmusic-player-bar><yt-formatted-string class="title">【歌ってみた】空を見上げる日</yt-formatted-string></ytmusic-player-bar>
+<script src="/dist/content.js"></script>

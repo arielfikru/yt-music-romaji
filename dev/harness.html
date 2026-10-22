@@ -1,0 +1,93 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Romaji harness</title>
+<!-- Mimics the YT Music DOM so the content script can be checked without the real site.
+     Query: mode, fontSize, synced=1 (fake LRCLIB reply), t=<seconds> (fake playback position). -->
+<style>
+  body { margin: 0; background: #030303; color: #fff; font-family: Roboto, system-ui, sans-serif; }
+  ytmusic-player-bar { display: block; padding: 12px 24px; background: #212121; }
+  ytmusic-player-bar .title { display: block; font-size: 16px; }
+  ytmusic-player-bar .byline { display: block; font-size: 14px; color: #aaa; }
+  ytmusic-player-bar a { color: inherit; text-decoration: none; }
+  ytmusic-description-shelf-renderer { display: block; width: 560px; height: 520px; overflow: auto; padding: 24px; }
+  yt-formatted-string.description { display: block; white-space: pre-wrap; font-size: 16px; line-height: 1.6; }
+</style>
+<script>
+  const params = new URLSearchParams(location.search);
+  const store = {
+    mode: params.get("mode") || "below",
+    fontSize: Number(params.get("fontSize") || 16),
+    synced: params.get("synced") === "1",
+    translate: false,
+    lang: "id",
+    titles: true,
+  };
+  const listeners = [];
+  // Own sample lines, not song lyrics.
+  const LRC = [
+    "[00:01.00]私は毎朝コーヒーを飲みます",
+    "[00:04.50]東京の空はとても青い",
+    "[00:08.00]雨が降っても、走り続けよう",
+    "[00:12.00]",
+    "[00:15.00]「明日」はきっと晴れるはずさ",
+    "[00:19.00]Hello, 新しい世界へ行こう",
+  ].join("\n");
+  window.chrome = {
+    runtime: {
+      id: "harness",
+      getURL: (p) => "/dist/" + p,
+      sendMessage: async () => ({ lrc: LRC }),
+    },
+    storage: {
+      sync: {
+        get: (defs, cb) => cb({ ...defs, ...store }),
+        set: (obj) => {
+          Object.assign(store, obj);
+          const ch = {};
+          for (const k in obj) ch[k] = { newValue: obj[k] };
+          listeners.forEach((l) => l(ch));
+        },
+      },
+      local: {
+        // One sample hand correction, to show how edited lines look.
+        data: { overrides: { "東京の空はとても青い": "tokyo no sora wa totemo aoi (edited)" } },
+        get(key) { return Promise.resolve({ [key]: this.data[key] }).then((r) => (arguments[1]?.(r), r)); },
+        set(obj) { Object.assign(this.data, obj); return Promise.resolve(); },
+      },
+      onChanged: { addListener: (l) => listeners.push(l) },
+    },
+  };
+  if (params.get("edit") === "1") {
+    setTimeout(() => [...document.querySelectorAll(".rl-btn")].find((b) => b.textContent === "Edit")?.click(), 3000);
+  }
+  // ?song=en swaps in English sample lines (own text) to check non-Japanese songs.
+  if (params.get("song") === "en") {
+    addEventListener("DOMContentLoaded", () => {
+      document.querySelector("yt-formatted-string.description").textContent =
+        "The morning light is soft\nI walk along the river\n\nWe sing until the night";
+    });
+  }
+  let fakeTime = Number(params.get("t") || 0);
+  addEventListener("DOMContentLoaded", () => {
+    const v = document.querySelector("video");
+    Object.defineProperty(v, "currentTime", { get: () => fakeTime, set: (x) => (fakeTime = x) });
+    Object.defineProperty(v, "duration", { get: () => 200 });
+  });
+</script>
+<link rel="stylesheet" href="/dist/content.css">
+<video hidden></video>
+<ytmusic-player-bar>
+  <yt-formatted-string class="title">空を見上げる日</yt-formatted-string>
+  <yt-formatted-string class="byline"><a href="#">夜の猫</a> • <a href="#">小さな物語</a> • 2025</yt-formatted-string>
+</ytmusic-player-bar>
+<ytmusic-player-page>
+  <ytmusic-description-shelf-renderer>
+    <yt-formatted-string class="description">私は毎朝コーヒーを飲みます
+東京の空はとても青い
+雨が降っても、走り続けよう
+
+「明日」はきっと晴れるはずさ
+Hello, 新しい世界へ行こう</yt-formatted-string>
+  </ytmusic-description-shelf-renderer>
+</ytmusic-player-page>
+<script src="/dist/content.js"></script>
