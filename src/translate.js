@@ -20,6 +20,12 @@ if (globalThis.chrome?.storage) {
   });
 }
 
+// Claude's translation style ("plain", "singable", "poetic"), set from the popup setting.
+// Part of every cache key, so switching style shows that style's saved translations.
+let style = "plain";
+const STYLE_LABEL = { plain: "", singable: ", Translyrics", poetic: ", Poetic" };
+export const setTranslationStyle = (s) => (style = s || "plain");
+
 // Forget translations made so far, e.g. on-device ones from before a Claude key was saved.
 export const resetTranslations = () => (cache.clear(), sources.clear());
 export const usingClaude = () => claudeOn;
@@ -109,10 +115,22 @@ async function nanoChunk(base, context, lines) {
   }
 }
 
+// On-device engines have no styles, but a Claude-less line still keys per style: it is retried
+// with Claude when the style changes.
+const keyPrefix = (lang, source) => source + ">" + lang + "/" + style + "\u0000";
+
 // ---- Claude (via the background worker) ----
 
 async function claudeSong(lines, lang, source, song) {
-  const reply = await chrome.runtime.sendMessage({ type: "claude-translate", lines, source, lang, title: song?.title, artist: song?.artist });
+  const reply = await chrome.runtime.sendMessage({
+    type: "claude-translate",
+    lines,
+    source,
+    lang,
+    style,
+    title: song?.title,
+    artist: song?.artist,
+  });
   // No reply at all: the background worker is an older build without Claude (reload the extension).
   if (!reply?.translations) throw new Error(reply?.error ?? "Background worker didn't answer; reload the extension");
   return reply.translations;
@@ -139,7 +157,7 @@ export async function prepareEngine(lang, onProgress, source = "ja") {
 // Starts translating a whole song so lines share context. Fills the cache that translateLine reads.
 // `song` ({ title, artist }) helps Claude recognise the song and its meaning.
 export function translateSong(lines, lang, source = "ja", song = null) {
-  const prefix = source + ">" + lang + "\u0000";
+  const prefix = keyPrefix(lang, source);
   const lyrics = lines.filter((l) => l.trim()); // repeats kept: Claude reads the song as sung
   const todo = [...new Set(lyrics)].filter((l) => !cache.has(prefix + l));
   if (!todo.length) return;
@@ -165,7 +183,7 @@ export function translateSong(lines, lang, source = "ja", song = null) {
         const out = await claudeSong(lyrics, lang, source, song);
         lyrics.forEach((l, j) => {
           if (!pending.has(l) || done.has(l) || out[j] == null) return; // repeats keep the first; skipped lines go on-device
-          settle(l, out[j], "Translated by Claude Haiku 5.5");
+          settle(l, out[j], `Translated by Claude Haiku 5.5${STYLE_LABEL[style] ?? ""}`);
         });
         fallbackWhy = " (Claude skipped this line)";
       } catch (e) {
@@ -202,10 +220,10 @@ export function translateSong(lines, lang, source = "ja", song = null) {
 }
 
 // Hover text for a translated line: which engine made it, and why Claude didn't when it fell back.
-export const translationSource = (line, lang, source = "ja") => sources.get(source + ">" + lang + "\u0000" + line) ?? "";
+export const translationSource = (line, lang, source = "ja") => sources.get(keyPrefix(lang, source) + line) ?? "";
 
 export function translateLine(line, lang, source = "ja") {
-  const key = source + ">" + lang + "\u0000" + line;
+  const key = keyPrefix(lang, source) + line;
   if (!cache.has(key)) translateSong([line], lang, source);
   return cache.get(key);
 }

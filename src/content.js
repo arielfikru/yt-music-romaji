@@ -6,6 +6,7 @@ import {
   detectLanguage,
   prepareEngine,
   resetTranslations,
+  setTranslationStyle,
   translateLine,
   translateSong,
   translationSource,
@@ -21,13 +22,22 @@ const MODES = [
   ["romaji", "Romaji"],
   ["off", "Original"],
 ];
+const TR_STYLES = [
+  ["plain", "Normal", "Clear, casual translation of the meaning"],
+  ["singable", "Translyrics", "Singable lyrics: same rhythm as the melody, rhyming A-B-A-B"],
+  ["poetic", "Poetic", "Literary and figurative, like a poem"],
+];
+const TR_LANGS = [
+  ["id", "ID", "Translate into Indonesian"],
+  ["en", "EN", "Translate into English"],
+];
 const FONT_MIN = 12;
 const FONT_MAX = 32;
 const FONT_STEP = 2;
 const OFFSET_STEP = 0.5;
 const USER_SCROLL_PAUSE_MS = 4000;
 
-const DEFAULTS = { mode: "below", fontSize: 16, translate: false, lang: "id", titles: true, synced: true };
+const DEFAULTS = { mode: "below", fontSize: 16, translate: false, lang: "id", style: "plain", titles: true, synced: true };
 let settings = { ...DEFAULTS };
 
 const romajiCache = new Map();
@@ -178,7 +188,7 @@ class LyricsView {
 
   // Re-renders only when something visible changed; cheap to call on every scan.
   async render() {
-    const key = [settings.mode, settings.fontSize, settings.translate, settings.lang, this.syncStatus, this.offset, this.editing, overridesVersion].join("|");
+    const key = [settings.mode, settings.fontSize, settings.translate, settings.lang, settings.style, this.syncStatus, this.offset, this.editing, overridesVersion].join("|");
     if (key === this.renderedKey) return;
     this.renderedKey = key;
 
@@ -213,6 +223,7 @@ class LyricsView {
     if (!this.alive || key !== this.renderedKey) return;
 
     this.translating = settings.translate && this.source !== settings.lang;
+    setTranslationStyle(settings.style);
     if (this.translating) {
       translateSong(
         this.lines.map((l) => l.text).filter((t) => this.needsTranslation(t)),
@@ -335,20 +346,26 @@ class LyricsView {
     this.render();
   }
 
-  toolbar() {
-    const bar = el("div", "rl-toolbar");
-
+  // A row of radio buttons bound to one setting, e.g. the display mode or the translation style.
+  segmented(key, options, ariaLabel) {
     const seg = el("div", "rl-seg");
     seg.setAttribute("role", "radiogroup");
-    seg.setAttribute("aria-label", "Lyrics display");
-    for (const [value, label] of MODES) {
+    seg.setAttribute("aria-label", ariaLabel);
+    for (const [value, label, title] of options) {
       seg.append(
-        button("rl-seg-btn", label, () => chrome.storage.sync.set({ mode: value }), {
+        button("rl-seg-btn", label, () => chrome.storage.sync.set({ [key]: value }), {
           role: "radio",
-          "aria-checked": String(settings.mode === value),
+          "aria-checked": String(settings[key] === value),
+          ...(title ? { title } : {}),
         })
       );
     }
+    return seg;
+  }
+
+  toolbar() {
+    const bar = el("div", "rl-toolbar");
+    const seg = this.segmented("mode", MODES, "Lyrics display");
 
     const tr = button("rl-btn rl-tr-btn", null, () => this.toggleTranslate(tr), {
       "aria-pressed": String(settings.translate),
@@ -388,6 +405,13 @@ class LyricsView {
     if (this.japanese) actions.append(copy);
 
     bar.append(main, actions);
+    // Translation settings sit next to the lyrics they change, only while translating.
+    if (settings.translate && !tr.disabled) {
+      const trRow = el("div", "rl-row rl-tr-row");
+      if (usingClaude()) trRow.append(this.segmented("style", TR_STYLES, "Translation style"));
+      trRow.append(this.segmented("lang", TR_LANGS, "Translate into"));
+      bar.append(trRow);
+    }
     const sync = this.syncBar();
     return sync ? [bar, sync].reduce((frag, n) => (frag.append(n), frag), document.createDocumentFragment()) : bar;
   }

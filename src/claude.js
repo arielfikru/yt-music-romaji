@@ -11,7 +11,7 @@ const PROMPT_VERSION = 2;
 const PREFIX = "tr:"; // storage keys: "tr:" + lang + ":" + sha256 of the song
 const PARSE_PREFIX = "parse:"; // "parse:" + sha256 of video title + artist
 const LANGS = { id: "Indonesian", en: "English", ja: "Japanese", ko: "Korean", zh: "Chinese", es: "Spanish", fr: "French" };
-const STYLE = {
+const TONE = {
   id: "Write casual, everyday Indonesian the way people talk and sing: aku/kamu (never saya/anda), words like gak, udah, aja, banget where they fit. Never stiff or formal.",
   en: "Write casual, natural spoken English. Never stiff or formal.",
 };
@@ -20,7 +20,26 @@ const inflight = new Map(); // storage key -> Promise<string[]>
 
 const langName = (code) => LANGS[code] ?? code;
 
-function systemPrompt(source, lang) {
+// The three ways a song can be translated, picked in the popup. Each is saved separately.
+export const STYLES = ["plain", "singable", "poetic"];
+const STYLE_NAMES = { plain: "Normal", singable: "Translyrics", poetic: "Poetic" };
+const STYLE_RULES = {
+  plain: (lang) => [TONE[lang] ?? "Write casually, not formally.", "Keep it poetic and simple."],
+  singable: (lang) => [
+    `Write translyrics: ${langName(lang)} lyrics someone can sing to the original melody, as if the song had been written in ${langName(lang)}.`,
+    "Match each line's rhythm: about as many syllables as the original line has sung syllables (count Japanese morae), with stressed syllables where the melody's strong beats fall.",
+    "Rhyme the line endings, in an A-B-A-B pattern within each verse and chorus where the lines allow (A-A-B-B when that fits better). Rhythm and rhyme matter more than literal meaning: rephrase freely, but keep each line's image and feeling.",
+    TONE[lang] ?? "Write casually, not formally.",
+  ],
+  poetic: (lang) => [
+    `Write it as a poem in ${langName(lang)}: literary diction, imagery and figures of speech, a deliberate rhythm.`,
+    lang === "id"
+      ? "Use the voice of Indonesian poetry and song (aku/kau, words like rindu, sukma, lara where they fit), never stiff or bureaucratic, never saya/anda."
+      : "Lyrical and beautiful, never stiff or bureaucratic.",
+  ],
+};
+
+function systemPrompt(source, lang, style = "plain") {
   return [
     `You translate ${langName(source)} song lyrics into ${langName(lang)}.`,
     "You get the whole song as numbered lines. Read all of it first: work out who is singing to whom, what omitted subjects refer to, and where a sentence runs over several lines.",
@@ -29,8 +48,8 @@ function systemPrompt(source, lang) {
     "Render them as something an Indonesian listener would understand and could sing along to, keeping the image and the feeling; use the song's title and artist, if you know the song, to get its meaning right.",
     "Never leave Japanese characters in a translation, and never transliterate a word instead of translating it (only names stay as they are).",
     "Keep pronouns and tone the same through the whole song.",
-    STYLE[lang] ?? "Write casually, not formally.",
-    "Keep it poetic and simple. Leave English words, names and sounds like 'la la' as they are.",
+    ...(STYLE_RULES[style] ?? STYLE_RULES.plain)(lang),
+    "Leave English words, names and sounds like 'la la' as they are.",
     "Return one entry per numbered line, with its number, covering every line. Repeated lines get the same translation.",
   ].join(" ");
 }
@@ -57,7 +76,9 @@ async function sha256(text) {
   return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-const songKey = async (lines, source, lang) => PREFIX + lang + ":" + (await sha256(source + "\n" + lines.join("\n")));
+// "plain" hashes without a style marker, so songs saved before styles existed stay valid.
+const songKey = async (lines, source, lang, style = "plain") =>
+  PREFIX + lang + ":" + (await sha256(source + "\n" + (style === "plain" ? "" : style + "\n") + lines.join("\n")));
 
 function explain(e) {
   if (e instanceof Anthropic.AuthenticationError) return "Invalid API key";
@@ -119,36 +140,77 @@ async function tracked(request, done = "Working") {
 const songHeader = (song) =>
   song?.title ? `Song: ${song.title}${song.artist ? " — " + song.artist : ""}\n\n` : "";
 
-async function callClaude(lines, source, lang, song) {
-  const response = await (await client()).messages.create({
+// Fills `t` (one slot per song line) from Claude's numbered entries. Tolerates an entry that carries
+// several lines ("1. …\n2. …", or a block for lines n, n+1, …): each part goes to the next slot.
+function collect(t, entries) {
+  for (const { n, text } of entries ?? []) {
+    const parts = String(text ?? "").split(/\r?\n/).filter((p) => p.trim());
+    parts.forEach((part, k) => {
+      const numbered = /^\s*(\d+)\s*[.):-]\s*(.*)$/.exec(part);
+      const i = (numbered && parts.length > 1 ? Number(numbered[1]) : Number(n) + k) - 1;
+      const value = (numbered && parts.length > 1 ? numbered[2] : part).trim();
+      if (i >= 0 && i < t.length && t[i] === null && value) t[i] = value;
+    });
+  }
+  return t;
+}
+
+const missingLines = (t) => t.flatMap((x, i) => (x === null ? [i + 1] : []));
+
+// Saved for debugging when Claude's answer still can't be used: read it with
+// chrome.storage.local.get("claudeLastBadAnswer") in the extension's service worker console.
+const keepBadAnswer = (response, lines) =>
+  chrome.storage.local.set({
+    claudeLastBadAnswer: { at: Date.now(), lines: lines.length, content: response.content, stop: response.stop_reason },
+  });
+
+async function callClaude(lines, source, lang, song, style) {
+  const api = await client();
+  const request = {
     model: MODEL,
     max_tokens: 16000,
-    system: systemPrompt(source, lang),
+    system: systemPrompt(source, lang, style),
     output_config: { effort: "high", format: { type: "json_schema", schema: SCHEMA } },
-    messages: [{ role: "user", content: songHeader(song) + lines.map((l, i) => `${i + 1}. ${l}`).join("\n") }],
-  });
-  // Matched by number, so a skipped or merged line costs only that line (it falls back to on-device).
-  const t = lines.map(() => null);
-  for (const { n, text } of jsonAnswer(response).translations ?? []) {
-    if (n >= 1 && n <= lines.length && String(text).trim()) t[n - 1] = String(text).trim();
+  };
+  const messages = [{ role: "user", content: songHeader(song) + lines.map((l, i) => `${i + 1}. ${l}`).join("\n") }];
+  let response = await api.messages.create({ ...request, messages });
+  const t = collect(lines.map(() => null), jsonAnswer(response).translations);
+
+  // One follow-up for lines it skipped, in the same conversation so the song context carries over.
+  let missing = missingLines(t);
+  if (missing.length) {
+    messages.push(
+      { role: "assistant", content: response.content },
+      {
+        role: "user",
+        content: `You left out lines ${missing.join(", ")} of ${lines.length}. Return entries for exactly those lines, one entry per line, same style.`,
+      }
+    );
+    response = await api.messages.create({ ...request, messages });
+    collect(t, jsonAnswer(response).translations);
+    missing = missingLines(t);
   }
-  const missing = t.filter((x) => x === null).length;
-  if (missing > lines.length / 2) throw new Error(`Claude translated only ${lines.length - missing} of ${lines.length} lines`);
+  // A few skipped lines fall back to on-device; most of the song missing means the answer is unusable.
+  if (missing.length > lines.length / 2) {
+    await keepBadAnswer(response, lines);
+    throw new Error(`Claude translated only ${lines.length - missing.length} of ${lines.length} lines`);
+  }
   return t;
 }
 
 // Translations for `lines` (unique, non-empty, in song order), from storage or one Claude call.
-export async function translateWithClaude({ lines, source, lang, title, artist }) {
-  const key = await songKey(lines, source, lang);
+export async function translateWithClaude({ lines, source, lang, title, artist, style = "plain" }) {
+  if (!STYLES.includes(style)) style = "plain";
+  const key = await songKey(lines, source, lang, style);
   if (!inflight.has(key)) {
     const job = (async () => {
       const { [key]: stored } = await chrome.storage.local.get(key);
       if (stored?.t?.length === lines.length && stored.v === PROMPT_VERSION) return stored.t;
       const t = await tracked(
-        () => callClaude(lines, source, lang, { title, artist }),
-        (t) => `Translated a song (${t.filter(Boolean).length} lines)`
+        () => callClaude(lines, source, lang, { title, artist }, style),
+        (t) => `Translated a song, ${STYLE_NAMES[style]} (${t.filter(Boolean).length} lines)`
       );
-      await chrome.storage.local.set({ [key]: { t, lines, source, lang, title, artist, v: PROMPT_VERSION, model: MODEL, at: Date.now() } });
+      await chrome.storage.local.set({ [key]: { t, lines, source, lang, style, title, artist, v: PROMPT_VERSION, model: MODEL, at: Date.now() } });
       return t;
     })();
     inflight.set(key, job);

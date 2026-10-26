@@ -18,6 +18,7 @@
   margin: 4px 0 12px;
 }
 .rl-row { display: flex; align-items: center; gap: 4px; }
+.rl-tr-row { flex-wrap: wrap; gap: 8px; }
 .rl-seg {
   display: inline-flex;
   padding: 3px;
