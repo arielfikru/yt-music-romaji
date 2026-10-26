@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 // All requests are intercepted: no browser data, API key or network is used.
 let storage = { claudeKey: "test-key" };
 globalThis.chrome = {
-  runtime: { getManifest: () => ({ version: "0.5.2" }) },
+  runtime: { getManifest: () => ({ version: "0.5.3" }) },
   storage: {
     local: {
       async get(key) { return structuredClone(key === null ? storage : { [key]: storage[key] }); },
@@ -16,12 +16,12 @@ globalThis.chrome = {
 };
 const { statusForVersion, statusText } = await import("../static/claude-status.js");
 const legacyStatus = { ok: false, message: "Claude translated only 1 of 72 lines" };
-const stale = statusForVersion(legacyStatus, "0.5.2");
+const stale = statusForVersion(legacyStatus, "0.5.3");
 assert.equal(stale.ok, null);
 assert.match(statusText(stale), /older version/);
 assert.doesNotMatch(statusText(stale), /✕|1 of 72/);
-const fresh = { ok: false, message: "Invalid API key", version: "0.5.2" };
-assert.deepEqual(statusForVersion(fresh, "0.5.2"), fresh);
+const fresh = { ok: false, message: "Invalid API key", version: "0.5.3" };
+assert.deepEqual(statusForVersion(fresh, "0.5.3"), fresh);
 assert.equal(statusText(fresh), "✕ Invalid API key");
 assert.equal(statusText({ ok: null, message: "Translating…" }), "Translating…");
 console.log("stale status migration and current error visibility passed");
@@ -37,7 +37,7 @@ let respond = (text) => answer(`translated:${text}`);
 globalThis.fetch = async (_url, init) => {
   const request = JSON.parse(init.body);
   assert.equal(storage.claudeStatus.phase, "working");
-  assert.equal(storage.claudeStatus.version, "0.5.2");
+  assert.equal(storage.claudeStatus.version, "0.5.3");
   calls.push(request);
   peak = Math.max(peak, ++active);
   await new Promise((resolve) => setTimeout(resolve, 3));
@@ -62,14 +62,18 @@ let result = await translate(repeated, { title: "Private title", artist: "Privat
 assert.deepEqual(result.translations, repeated.map((t) => `translated:${t}`));
 assert.equal(calls.length, 4);
 assert.equal(storage.claudeLastBadAnswer, undefined);
-assert.equal(storage.claudeStatus.version, "0.5.2");
+assert.equal(storage.claudeStatus.version, "0.5.3");
 assert.equal(storage.claudeStatus.ok, true);
 assert.ok(peak <= 3);
 assert.equal(peak, 3);
 for (const request of calls) {
   assert.doesNotMatch(request.system, /lyrics|song|copyright/i);
   assert.equal(request.messages.length, 1);
-  assert.deepEqual(Object.keys(JSON.parse(request.messages[0].content)), ["text"]);
+  const input = JSON.parse(request.messages[0].content);
+  assert.deepEqual(Object.keys(input), ["text", "before", "after"]);
+  const first = repeated.indexOf(input.text);
+  assert.deepEqual(input.before, repeated.slice(Math.max(0, first - 2), first));
+  assert.deepEqual(input.after, repeated.slice(first + 1, first + 3));
   assert.doesNotMatch(JSON.stringify(request), /Private title|Private artist/);
 }
 storage.claudeStatus = legacyStatus;
@@ -90,6 +94,7 @@ for (const style of ["singable", "poetic"]) {
 await translate([repeated[0]], { lang: "en" });
 await translate([repeated[0]], { source: "ko" });
 assert.equal(calls.length, 8);
+console.log("bounded neighboring context, first-occurrence reuse and single-target requests passed");
 console.log("per-line prompts, duplicate reuse, persistent cache and style/language separation passed");
 
 reset();
@@ -104,9 +109,15 @@ assert.deepEqual((await translate(old)).translations, old.map((t) => `translated
 assert.equal(calls.length, 2);
 reset();
 storage[songKey(old)] = { t: ["catatan lama", "pagi baru"], v: 2 };
-assert.deepEqual((await translate(old)).translations, ["catatan lama", "pagi baru"]);
-assert.equal(calls.length, 0);
-console.log("old refusal invalidation and valid legacy cache preservation passed");
+assert.deepEqual((await translate(old)).translations, old.map((t) => `translated:${t}`));
+assert.equal(calls.length, 2);
+reset();
+storage[songKey(old)] = { t: ["expanded old answer", "another old answer"], v: 3 };
+const oldLineKey = "tr-line:id:" + createHash("sha256").update(JSON.stringify([3, "ja", "plain", old[0]])).digest("hex");
+storage[oldLineKey] = { text: "expanded old line", v: 3 };
+assert.deepEqual((await translate(old)).translations, old.map((t) => `translated:${t}`));
+assert.equal(calls.length, 2);
+console.log("old refusal and previous prompt song/line cache invalidation passed");
 
 reset();
 respond = (text) => text === "拒否"

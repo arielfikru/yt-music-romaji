@@ -25,7 +25,7 @@ const MODES = [
 const TR_STYLES = [
   ["plain", "Normal", "Clear, casual translation of the meaning"],
   ["singable", "Translyrics", "Rhythmic translation with a similar syllable count per line"],
-  ["poetic", "Poetic", "Literary and figurative, like a poem"],
+  ["poetic", "Poetic", "Elegant, concise wording that preserves the original meaning"],
 ];
 const TR_LANGS = [
   ["id", "ID", "Translate into Indonesian"],

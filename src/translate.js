@@ -1,5 +1,5 @@
 // Translation engines, best first:
-// - Claude, when an API key is set in the popup: one line per request, with repeated lines reused (see claude.js).
+// - Claude, when an API key is set in the popup: one target line plus nearby context per request, with repeated lines reused (see claude.js).
 // - English: Gemini Nano (Prompt API) translates the song in chunks with surrounding lines as context.
 // - Indonesian, or when Gemini Nano is unavailable: Chrome's Translator API, line by line.
 // The on-device engines also cover any song Claude fails on.
@@ -194,9 +194,9 @@ export function translateSong(lines, lang, source = "ja", song = null, onStatus 
   (async () => {
     await claudeLoaded;
     if (claudeOn) {
-      report({ state: "working", text: `Translating with Claude · ${STYLE_NAME[translationStyle]}…`, detail: "One request per unique line; repeated and saved lines are reused" });
+      report({ state: "working", text: `Translating with Claude · ${STYLE_NAME[translationStyle]}…`, detail: "One target with two lines before and after; repeated and saved lines are reused" });
       try {
-        // Keep song storage stable; only individual lines are sent to the API.
+        // Keep song storage stable; each target is sent with a small context window.
         const { translations: out, cached, declinedLines, fallbackError } = await claudeSong(lyrics, lang, source, song, translationStyle);
         lyrics.forEach((l, j) => {
           if (!pending.has(l) || done.has(l) || out[j] == null) return; // repeats keep the first; skipped lines go on-device
