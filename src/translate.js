@@ -112,7 +112,8 @@ async function nanoChunk(base, context, lines) {
 
 async function claudeSong(lines, lang, source) {
   const reply = await chrome.runtime.sendMessage({ type: "claude-translate", lines, source, lang });
-  if (!reply?.translations) throw new Error(reply?.error ?? "No reply from the background worker");
+  // No reply at all: the background worker is an older build without Claude (reload the extension).
+  if (!reply?.translations) throw new Error(reply?.error ?? "Background worker didn't answer; reload the extension");
   return reply.translations;
 }
 

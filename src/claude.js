@@ -55,10 +55,16 @@ function explain(e) {
 // What the popup shows next to the key: set by the key check and by every real API call.
 const setStatus = (ok, message) => chrome.storage.local.set({ claudeStatus: { ok, message, at: Date.now() } });
 
-// Validates a key without spending tokens: fetching the model's info needs a working key with access to it.
+// A tiny real request (a fraction of a cent), so it also catches an empty credit balance.
 export async function checkKey(apiKey) {
   try {
-    await new Anthropic({ apiKey, dangerouslyAllowBrowser: true, maxRetries: 0 }).models.retrieve(MODEL);
+    const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true, maxRetries: 0, timeout: 20_000 });
+    await client.messages.create({
+      model: MODEL,
+      max_tokens: 16,
+      output_config: { effort: "low" },
+      messages: [{ role: "user", content: "Reply with OK." }],
+    });
     await setStatus(true, "Key works");
     return { ok: true };
   } catch (e) {

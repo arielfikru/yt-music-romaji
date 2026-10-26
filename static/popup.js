@@ -35,6 +35,12 @@ const saveBtn = document.getElementById("claude-save");
 const count = document.getElementById("cache-count");
 const fileInput = document.getElementById("cache-file");
 const send = (msg) => chrome.runtime.sendMessage(msg);
+// An unanswered message means the background worker is still the old build: Chrome only swaps it on reload.
+const OUTDATED = "Reload the extension in chrome://extensions (↻), then save again";
+function ask(msg, ms) {
+  const timeout = new Promise((resolve) => setTimeout(() => resolve({ error: "No answer from Anthropic after 25 s" }), ms));
+  return Promise.race([send(msg).then((r) => r ?? { error: OUTDATED }, () => ({ error: OUTDATED })), timeout]);
+}
 
 function paintKey(key, status) {
   const bad = Boolean(key) && status?.ok === false;
@@ -51,7 +57,7 @@ async function refreshKey() {
 }
 
 async function paintCount() {
-  const { entries = {} } = await send({ type: "claude-cache-export" });
+  const { entries = {} } = (await send({ type: "claude-cache-export" }).catch(() => null)) ?? {};
   const n = Object.keys(entries).length;
   count.textContent = n === 1 ? "1 song saved" : `${n} songs saved`;
 }
@@ -76,12 +82,14 @@ saveBtn.addEventListener("click", async () => {
   saveBtn.disabled = true;
   keyStatus.className = "key-status";
   keyStatus.textContent = "Checking key…";
-  const { ok } = await send({ type: "claude-check-key", key });
+  const reply = await ask({ type: "claude-check-key", key }, 25_000);
   // Save even a failing key: the problem may be temporary (offline), and the status says what's wrong.
+  // The worker records its own result; a reply it never sent is recorded here.
+  if (!("ok" in reply)) await chrome.storage.local.set({ claudeStatus: { ok: false, message: reply.error, at: Date.now() } });
   await chrome.storage.local.set({ claudeKey: key });
   saveBtn.disabled = false;
   await refreshKey();
-  if (ok) keyStatus.textContent = "✓ Key works. Lyrics already open are re-translated now.";
+  if (reply.ok) keyStatus.textContent = "✓ Key works. Lyrics already open are re-translated now.";
 });
 
 document.getElementById("cache-export").addEventListener("click", async () => {
