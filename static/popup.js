@@ -1,4 +1,6 @@
 const defaults = { mode: "below", fontSize: 16, translate: false, lang: "id", titles: true, synced: true };
+// Shown so it's easy to tell whether Chrome is running the latest build (after ↻ in chrome://extensions).
+document.getElementById("version").textContent = "v" + chrome.runtime.getManifest().version;
 const groups = document.querySelectorAll(".seg");
 const switches = document.querySelectorAll(".switch input");
 const slider = document.getElementById("font-size");
@@ -58,7 +60,8 @@ async function refreshKey() {
 
 async function paintCount() {
   const { entries = {} } = (await send({ type: "claude-cache-export" }).catch(() => null)) ?? {};
-  const n = Object.keys(entries).filter((k) => k.startsWith("tr:")).length;
+  // Songs Claude declined are remembered too (so they aren't billed again), but aren't "saved".
+  const n = Object.entries(entries).filter(([k, v]) => k.startsWith("tr:") && Array.isArray(v?.t)).length;
   count.textContent = n === 1 ? "1 song saved" : `${n} songs saved`;
 }
 

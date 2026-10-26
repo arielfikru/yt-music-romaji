@@ -132,8 +132,12 @@ async function claudeSong(lines, lang, source, song) {
     artist: song?.artist,
   });
   // No reply at all: the background worker is an older build without Claude (reload the extension).
-  if (!reply?.translations) throw new Error(reply?.error ?? "Background worker didn't answer; reload the extension");
-  return reply.translations;
+  if (!reply?.translations) {
+    const e = new Error(reply?.error ?? "Background worker didn't answer; reload the extension");
+    e.declined = reply?.declined;
+    throw e;
+  }
+  return reply;
 }
 
 // ---- public API ----
@@ -154,13 +158,24 @@ export async function prepareEngine(lang, onProgress, source = "ja") {
   throw new Error("No on-device translator in this Chrome (needs Chrome 138+)");
 }
 
+// How the latest translation of each song went, for the chip in the lyrics toolbar:
+// { state: "working" | "ok" | "partial" | "failed" | "device", text, detail }.
+const songStatus = new Map(); // prefix + lyrics -> status
+const STYLE_NAME = { plain: "Normal", singable: "Translyrics", poetic: "Poetic" };
+
 // Starts translating a whole song so lines share context. Fills the cache that translateLine reads.
-// `song` ({ title, artist }) helps Claude recognise the song and its meaning.
-export function translateSong(lines, lang, source = "ja", song = null) {
+// `song` ({ title, artist }) helps Claude recognise the song and its meaning. `onStatus` is called
+// with the song's status now (if known) and whenever it changes.
+export function translateSong(lines, lang, source = "ja", song = null, onStatus = () => {}) {
   const prefix = keyPrefix(lang, source);
   const lyrics = lines.filter((l) => l.trim()); // repeats kept: Claude reads the song as sung
+  const statusKey = prefix + lyrics.join("\n");
+  const report = (status) => (songStatus.set(statusKey, status), onStatus(status));
   const todo = [...new Set(lyrics)].filter((l) => !cache.has(prefix + l));
-  if (!todo.length) return;
+  if (!todo.length) {
+    if (songStatus.has(statusKey)) onStatus(songStatus.get(statusKey));
+    return;
+  }
 
   const pending = new Map(todo.map((l) => [l, Promise.withResolvers()]));
   for (const [l, d] of pending) {
@@ -178,18 +193,41 @@ export function translateSong(lines, lang, source = "ja", song = null) {
   (async () => {
     await claudeLoaded;
     if (claudeOn) {
+      report({ state: "working", text: `Translating with Claude · ${STYLE_NAME[style]}…`, detail: "One request for the whole song" });
       try {
         // Always the full song, so it gets the same storage key (and context) every time.
-        const out = await claudeSong(lyrics, lang, source, song);
+        const { translations: out, cached } = await claudeSong(lyrics, lang, source, song);
         lyrics.forEach((l, j) => {
           if (!pending.has(l) || done.has(l) || out[j] == null) return; // repeats keep the first; skipped lines go on-device
           settle(l, out[j], `Translated by Claude Haiku 5.5${STYLE_LABEL[style] ?? ""}`);
         });
         fallbackWhy = " (Claude skipped this line)";
+        const skipped = todo.filter((l) => !done.has(l)).length;
+        const base = `Claude · ${STYLE_NAME[style]}${cached ? " · saved" : ""}`;
+        report(
+          skipped
+            ? { state: "partial", text: `${base} · ${skipped} on-device`, detail: `Claude skipped ${skipped} lines; they use the on-device translator` }
+            : {
+                state: "ok",
+                text: base,
+                detail: cached ? "Loaded from this computer, no API call" : "Translated now and saved on this computer",
+              }
+        );
       } catch (e) {
         console.warn("[romaji-lyrics] Claude translation failed, using on-device:", e.message);
         fallbackWhy = ` (Claude failed: ${e.message})`;
+        report(
+          e.declined
+            ? {
+                state: "partial",
+                text: "Claude declined (copyright) · on-device",
+                detail: "Claude won't translate copyrighted lyrics in full. Remembered for this song, so it isn't asked (or billed) again.",
+              }
+            : { state: "failed", text: "Claude failed · using on-device", detail: e.message }
+        );
       }
+    } else {
+      report({ state: "device", text: "On-device translation", detail: "Add a Claude API key in the extension popup for better translations" });
     }
     const engine = todo.every((l) => done.has(l)) ? null : await engineFor(lang, source);
     if (engine === "nano") {

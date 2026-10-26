@@ -112,6 +112,12 @@
 }
 .rl-chip-muted { background: transparent; padding-left: 0; color: rgba(255, 255, 255, 0.45); }
 .rl-chip-live { background: rgba(62, 166, 255, 0.16); color: #8cc8ff; }
+.rl-tr-status { cursor: default; }
+.rl-tr-working { background: rgba(255, 255, 255, 0.08); color: rgba(255, 255, 255, 0.7); }
+.rl-tr-ok { background: rgba(123, 216, 143, 0.14); color: #9be3ab; }
+.rl-tr-partial { background: rgba(255, 196, 87, 0.14); color: #ffd27a; }
+.rl-tr-failed { background: rgba(255, 123, 123, 0.14); color: #ff9b9b; }
+.rl-tr-device { background: transparent; padding-left: 0; color: rgba(255, 255, 255, 0.45); }
 .rl-offset-value {
   min-width: 44px;
   text-align: center;

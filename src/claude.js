@@ -164,6 +164,15 @@ const keepBadAnswer = (response, lines) =>
     claudeLastBadAnswer: { at: Date.now(), lines: lines.length, content: response.content, stop: response.stop_reason },
   });
 
+// Claude often won't translate a copyrighted song in full: it answers with one entry explaining that
+// (and a summary) instead of the lines. That is its policy, not a format slip, so it isn't retried.
+class DeclinedError extends Error {
+  constructor() {
+    super("Claude won't translate these lyrics in full (copyright)");
+    this.declined = true;
+  }
+}
+
 async function callClaude(lines, source, lang, song, style) {
   const api = await client();
   const request = {
@@ -175,6 +184,10 @@ async function callClaude(lines, source, lang, song, style) {
   const messages = [{ role: "user", content: songHeader(song) + lines.map((l, i) => `${i + 1}. ${l}`).join("\n") }];
   let response = await api.messages.create({ ...request, messages });
   const t = collect(lines.map(() => null), jsonAnswer(response).translations);
+  if (lines.length >= 4 && lines.length - missingLines(t).length <= Math.max(1, lines.length * 0.1)) {
+    await keepBadAnswer(response, lines);
+    throw new DeclinedError();
+  }
 
   // One follow-up for lines it skipped, in the same conversation so the song context carries over.
   let missing = missingLines(t);
@@ -205,21 +218,32 @@ export async function translateWithClaude({ lines, source, lang, title, artist, 
   if (!inflight.has(key)) {
     const job = (async () => {
       const { [key]: stored } = await chrome.storage.local.get(key);
-      if (stored?.t?.length === lines.length && stored.v === PROMPT_VERSION) return stored.t;
-      const t = await tracked(
-        () => callClaude(lines, source, lang, { title, artist }, style),
-        (t) => `Translated a song, ${STYLE_NAMES[style]} (${t.filter(Boolean).length} lines)`
-      );
+      if (stored?.t?.length === lines.length && stored.v === PROMPT_VERSION) return { t: stored.t, cached: true };
+      // A song Claude declined stays declined: asking again would only bill the same refusal.
+      if (stored?.declined && stored.v === PROMPT_VERSION) throw new DeclinedError();
+      let t;
+      try {
+        t = await tracked(
+          () => callClaude(lines, source, lang, { title, artist }, style),
+          (t) => `Translated a song, ${STYLE_NAMES[style]} (${t.filter(Boolean).length} lines)`
+        );
+      } catch (e) {
+        if (e.declined) {
+          await chrome.storage.local.set({ [key]: { declined: true, lines, source, lang, style, title, artist, v: PROMPT_VERSION, model: MODEL, at: Date.now() } });
+        }
+        throw e;
+      }
       await chrome.storage.local.set({ [key]: { t, lines, source, lang, style, title, artist, v: PROMPT_VERSION, model: MODEL, at: Date.now() } });
-      return t;
+      return { t, cached: false };
     })();
     inflight.set(key, job);
     job.finally(() => inflight.delete(key)).catch(() => {}); // the caller below reports the error
   }
   try {
-    return { translations: await inflight.get(key) };
+    const { t, cached } = await inflight.get(key);
+    return { translations: t, cached };
   } catch (e) {
-    return { error: explain(e) };
+    return { error: explain(e), declined: Boolean(e.declined) };
   }
 }
 

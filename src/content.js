@@ -229,7 +229,8 @@ class LyricsView {
         this.lines.map((l) => l.text).filter((t) => this.needsTranslation(t)),
         settings.lang,
         this.source,
-        this.track ?? currentTrack(this.src)
+        this.track ?? currentTrack(this.src),
+        (status) => this.paintTrStatus(status)
       );
     }
     this.rows = this.lines.map((line) => this.row(tk, line));
@@ -410,10 +411,25 @@ class LyricsView {
       const trRow = el("div", "rl-row rl-tr-row");
       if (usingClaude()) trRow.append(this.segmented("style", TR_STYLES, "Translation style"));
       trRow.append(this.segmented("lang", TR_LANGS, "Translate into"));
+      this.trChip = el("span", "rl-chip rl-tr-status");
+      this.trChip.setAttribute("role", "status");
+      trRow.append(this.trChip);
+      this.paintTrStatus(this.trStatus);
       bar.append(trRow);
     }
     const sync = this.syncBar();
     return sync ? [bar, sync].reduce((frag, n) => (frag.append(n), frag), document.createDocumentFragment()) : bar;
+  }
+
+  // Updates the translation chip in place, so a status change doesn't re-render the lyrics.
+  paintTrStatus(status) {
+    this.trStatus = status;
+    if (!this.trChip) return;
+    this.trChip.hidden = !status;
+    if (!status) return;
+    this.trChip.className = `rl-chip rl-tr-status rl-tr-${status.state}`;
+    this.trChip.textContent = status.text;
+    this.trChip.title = status.detail ?? "";
   }
 
   syncBar() {
