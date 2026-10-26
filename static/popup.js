@@ -1,6 +1,9 @@
+import { statusForVersion, statusText } from "./claude-status.js";
+
 const defaults = { mode: "below", fontSize: 16, translate: false, lang: "id", titles: true, synced: true };
+const version = chrome.runtime.getManifest().version;
 // Shown so it's easy to tell whether Chrome is running the latest build (after ↻ in chrome://extensions).
-document.getElementById("version").textContent = "v" + chrome.runtime.getManifest().version;
+document.getElementById("version").textContent = "v" + version;
 const groups = document.querySelectorAll(".seg");
 const switches = document.querySelectorAll(".switch input");
 const slider = document.getElementById("font-size");
@@ -45,11 +48,12 @@ function ask(msg, ms) {
 }
 
 function paintKey(key, status) {
+  status = statusForVersion(status, version);
   const bad = Boolean(key) && status?.ok === false;
-  keyState.textContent = !key ? "Off" : bad ? "Error" : "On";
+  keyState.textContent = !key ? "Off" : bad ? "Error" : status?.phase === "working" ? "Working" : "On";
   keyState.className = !key ? "" : bad ? "bad" : "on";
   keyStatus.className = "key-status " + (!key ? "" : bad ? "bad" : status?.ok ? "ok" : "");
-  keyStatus.textContent = !key ? "" : status ? (status.ok ? "✓ " : "✕ ") + status.message : "Not checked yet";
+  keyStatus.textContent = !key ? "" : statusText(status);
 }
 
 async function refreshKey() {
@@ -88,7 +92,7 @@ saveBtn.addEventListener("click", async () => {
   const reply = await ask({ type: "claude-check-key", key }, 25_000);
   // Save even a failing key: the problem may be temporary (offline), and the status says what's wrong.
   // The worker records its own result; a reply it never sent is recorded here.
-  if (!("ok" in reply)) await chrome.storage.local.set({ claudeStatus: { ok: false, message: reply.error, at: Date.now() } });
+  if (!("ok" in reply)) await chrome.storage.local.set({ claudeStatus: { ok: false, message: reply.error, at: Date.now(), version } });
   await chrome.storage.local.set({ claudeKey: key });
   saveBtn.disabled = false;
   await refreshKey();

@@ -81,7 +81,9 @@ function explain(e) {
 }
 
 // What the popup shows next to the key: set by the key check and by every real API call.
-const setStatus = (ok, message) => chrome.storage.local.set({ claudeStatus: { ok, message, at: Date.now() } });
+const setStatus = (ok, message, phase = "done") => chrome.storage.local.set({
+  claudeStatus: { ok, message, phase, at: Date.now(), version: chrome.runtime.getManifest().version },
+});
 
 // A tiny real request (a fraction of a cent), so it also catches an empty credit balance.
 export async function checkKey(apiKey) {
@@ -146,7 +148,7 @@ const usable = (text) => typeof text === "string" && Boolean(text.trim()) && !is
 // Store only the visible answer for diagnostics, not thinking blocks or signatures.
 const keepBadAnswer = (response) => chrome.storage.local.set({
   claudeLastBadAnswer: {
-    at: Date.now(), lines: 1, stop: response.stop_reason,
+    at: Date.now(), lines: 1, stop: response.stop_reason, version: chrome.runtime.getManifest().version,
     content: response.content.filter((b) => b.type === "text"),
   },
 });
@@ -223,8 +225,16 @@ export async function translateWithClaude({ lines, source, lang, title, artist, 
       const { [key]: stored } = await chrome.storage.local.get(key);
       if (Array.isArray(stored?.t) && stored.t.length === lines.length &&
           [2, PROMPT_VERSION].includes(stored.v) && stored.t.every((t, i) => !lines[i].trim() || usable(t))) {
+        await setStatus(null, `Loaded ${lines.length} saved lines (${STYLE_NAMES[style]}). No API call.`, "cached");
         return { t: stored.t, cached: true, declined: 0, error: "" };
       }
+      // Remove obsolete diagnostics only when a new attempt starts, so a previous
+      // whole-song answer cannot be mistaken for the result of this per-line request.
+      const { claudeLastBadAnswer } = await chrome.storage.local.get("claudeLastBadAnswer");
+      if (claudeLastBadAnswer && claudeLastBadAnswer.version !== chrome.runtime.getManifest().version) {
+        await chrome.storage.local.remove(["claudeLastBadAnswer"]);
+      }
+      await setStatus(null, `Translating ${new Set(lines.filter((l) => l.trim())).size} unique lines (${STYLE_NAMES[style]})…`, "working");
       const result = await callClaude(lines, source, lang, style);
       const count = result.t.filter(Boolean).length;
       await setStatus(!result.error, result.error || `Translated ${count}/${lines.length} lines, ${STYLE_NAMES[style]}`);

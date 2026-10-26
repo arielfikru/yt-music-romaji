@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 // All requests are intercepted: no browser data, API key or network is used.
 let storage = { claudeKey: "test-key" };
 globalThis.chrome = {
+  runtime: { getManifest: () => ({ version: "0.5.2" }) },
   storage: {
     local: {
       async get(key) { return structuredClone(key === null ? storage : { [key]: storage[key] }); },
@@ -13,6 +14,17 @@ globalThis.chrome = {
     onChanged: { addListener() {} },
   },
 };
+const { statusForVersion, statusText } = await import("../static/claude-status.js");
+const legacyStatus = { ok: false, message: "Claude translated only 1 of 72 lines" };
+const stale = statusForVersion(legacyStatus, "0.5.2");
+assert.equal(stale.ok, null);
+assert.match(statusText(stale), /older version/);
+assert.doesNotMatch(statusText(stale), /✕|1 of 72/);
+const fresh = { ok: false, message: "Invalid API key", version: "0.5.2" };
+assert.deepEqual(statusForVersion(fresh, "0.5.2"), fresh);
+assert.equal(statusText(fresh), "✕ Invalid API key");
+assert.equal(statusText({ ok: null, message: "Translating…" }), "Translating…");
+console.log("stale status migration and current error visibility passed");
 let calls = [];
 let active = 0;
 let peak = 0;
@@ -24,6 +36,8 @@ const answer = (text, stop = "end_turn") => ({
 let respond = (text) => answer(`translated:${text}`);
 globalThis.fetch = async (_url, init) => {
   const request = JSON.parse(init.body);
+  assert.equal(storage.claudeStatus.phase, "working");
+  assert.equal(storage.claudeStatus.version, "0.5.2");
   calls.push(request);
   peak = Math.max(peak, ++active);
   await new Promise((resolve) => setTimeout(resolve, 3));
@@ -42,9 +56,14 @@ const reset = () => {
 
 // Chorus at the beginning/middle/end: one request for each exact unique line.
 const repeated = ["朝の窓を開ける", "机に本を置く", "朝の窓を開ける", "水を飲む", "朝の窓を開ける", "外へ歩く"];
+storage.claudeStatus = legacyStatus;
+storage.claudeLastBadAnswer = { at: 1792996583019, lines: 72 };
 let result = await translate(repeated, { title: "Private title", artist: "Private artist" });
 assert.deepEqual(result.translations, repeated.map((t) => `translated:${t}`));
 assert.equal(calls.length, 4);
+assert.equal(storage.claudeLastBadAnswer, undefined);
+assert.equal(storage.claudeStatus.version, "0.5.2");
+assert.equal(storage.claudeStatus.ok, true);
 assert.ok(peak <= 3);
 assert.equal(peak, 3);
 for (const request of calls) {
@@ -53,8 +72,12 @@ for (const request of calls) {
   assert.deepEqual(Object.keys(JSON.parse(request.messages[0].content)), ["text"]);
   assert.doesNotMatch(JSON.stringify(request), /Private title|Private artist/);
 }
+storage.claudeStatus = legacyStatus;
 result = await translate(repeated);
 assert.equal(result.cached, true);
+assert.equal(storage.claudeStatus.phase, "cached");
+assert.equal(storage.claudeStatus.ok, null);
+assert.match(storage.claudeStatus.message, /No API call/);
 assert.equal(calls.length, 4);
 // Different order / a different song still reuses each line from persistent storage.
 await translate([repeated[3], repeated[0]], { title: "Another title" });
@@ -140,7 +163,7 @@ globalThis.LanguageModel = {
   }; } }; },
 };
 let sentStyle;
-chrome.runtime = { async sendMessage(message) {
+chrome.runtime = { ...chrome.runtime, async sendMessage(message) {
   sentStyle = message.style;
   return { translations: ["Claude translation", null], declinedLines: 1 };
 } };
