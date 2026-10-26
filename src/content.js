@@ -24,7 +24,7 @@ const MODES = [
 ];
 const TR_STYLES = [
   ["plain", "Normal", "Clear, casual translation of the meaning"],
-  ["singable", "Translyrics", "Singable lyrics: same rhythm as the melody, rhyming A-B-A-B"],
+  ["singable", "Translyrics", "Rhythmic translation with a similar syllable count per line"],
   ["poetic", "Poetic", "Literary and figurative, like a poem"],
 ];
 const TR_LANGS = [
@@ -371,7 +371,7 @@ class LyricsView {
     const tr = button("rl-btn rl-tr-btn", null, () => this.toggleTranslate(tr), {
       "aria-pressed": String(settings.translate),
       title: usingClaude()
-        ? "Translate with Claude (saved on this computer, each song is only sent once)"
+        ? "Translate with Claude (one request per unique line; saved lines are reused)"
         : translatorSupported()
         ? "Translate on this device (English uses Gemini Nano when available)"
         : "Needs Chrome 138+ (built-in translator)",
