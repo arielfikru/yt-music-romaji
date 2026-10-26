@@ -60,7 +60,12 @@ export function searchQueries(title, artist) {
   const t = title.normalize("NFKC");
   const quoted = [...t.matchAll(QUOTED)].map((m) => m[1].trim());
   const base = t.replace(GROUPS, " ").replace(QUOTED, " ").replace(NOISE, " ").replace(/\s+/g, " ").trim();
-  const parts = base.split(/\s*(?:\/|\||｜|\s-\s|\s–\s|\s—\s)\s*/).filter((p) => p.length > 0);
+  // Preserve letter-slash titles such as D/N/A and AC/DC. A spaced slash is
+  // a separator; an unspaced slash remains useful for Japanese title/artist uploads.
+  const parts = base.split(/\s+\/\s+|\s*[|｜]\s*|\s[-–—]\s/).filter(Boolean);
+  if (parts.length === 1 && !/^[A-Za-z0-9]+(?:\/[A-Za-z0-9]+)+$/.test(base)) {
+    parts.splice(0, 1, ...base.split(/\s*\/\s*/).filter(Boolean));
+  }
 
   const out = [{ track_name: title, artist_name: artist }];
   if (parts.length >= 2) {
@@ -68,6 +73,7 @@ export function searchQueries(title, artist) {
   }
   for (const q of quoted) out.push({ track_name: q });
   if (base && base !== title) out.push({ q: base });
+  if (parts.length >= 2) out.push({ track_name: parts[0] });
   const seen = new Set();
   return out.filter((p) => {
     const k = JSON.stringify(p);
@@ -78,7 +84,7 @@ export function searchQueries(title, artist) {
 // Pick by name when there is no on-page lyrics text to compare with. Both the track and the artist
 // must appear in the video title/artist, so a same-named song by someone else is never chosen.
 // Returns { lrc } when the timing fits this recording, else { plain } (a cover is usually longer or shorter).
-export function pickByTitle(results, { title, artist, duration }) {
+export function pickByTitle(results, { title, artist, duration, allowSynced = true }) {
   const hay = norm(title + " " + artist);
   let best = null;
   for (const r of results) {
@@ -86,7 +92,7 @@ export function pickByTitle(results, { title, artist, duration }) {
     const tn = norm(r.trackName || "");
     const an = norm(r.artistName || "");
     if (tn.length < 2 || !hay.includes(tn) || !an || !hay.includes(an)) continue;
-    const timed = Boolean(r.syncedLyrics) && duration > 0 && Math.abs((r.duration || 0) - duration) <= 3;
+    const timed = allowSynced && Boolean(r.syncedLyrics) && duration > 0 && Math.abs((r.duration || 0) - duration) <= 3;
     const plain = r.plainLyrics || (r.syncedLyrics ? parseLrc(r.syncedLyrics).map((l) => l.text).join("\n") : "");
     if (!timed && !plain) continue;
     const score = (timed ? 1000 : 0) + tn.length + an.length;

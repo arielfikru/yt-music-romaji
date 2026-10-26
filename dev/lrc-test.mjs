@@ -48,6 +48,16 @@ assert.deepEqual(pickByTitle(pool, { title: messy, artist: "kobasolo", duration:
 assert.equal(pickByTitle(pool, { title: "全然違う曲", artist: "誰か", duration: 230 }), null);
 console.log("title lookup tests passed");
 
+const cover = "D/N/A / 25時、ナイトコードで。 × 鏡音リン";
+const dnaQueries = searchQueries(cover, "プロジェクトセカイ");
+assert.deepEqual(dnaQueries[1], { track_name: "D/N/A", artist_name: "25時、ナイトコードで。 × 鏡音リン" });
+assert.ok(dnaQueries.some((q) => q.track_name === "D/N/A" && !q.artist_name));
+assert.ok(dnaQueries.every((q) => !["D", "N", "A"].includes(q.track_name)));
+assert.deepEqual(searchQueries("D/N/A", "Azari"), [{ track_name: "D/N/A", artist_name: "Azari" }]);
+assert.deepEqual(pickByTitle([{ trackName: "D/N/A", artistName: "Azari", duration: 133, syncedLyrics: lrc }],
+  { title: "D/N/A", artist: "Azari", duration: 130, allowSynced: false }), { plain: "朝が来た\n空は青い\n風が吹く\n\n空は青い" });
+console.log("slash-title preservation and cover timing protection passed");
+
 // ---- Indonesian pronoun normalisation ----
 import { normalizeIndonesian } from "../src/translate.js";
 assert.equal(normalizeIndonesian("Saya ingin bertemu Anda"), "Aku ingin bertemu kamu");

@@ -64,9 +64,10 @@ async function refreshKey() {
 
 async function paintCount() {
   const { entries = {} } = (await send({ type: "claude-cache-export" }).catch(() => null)) ?? {};
-  // Songs Claude declined are remembered too (so they aren't billed again), but aren't "saved".
+  // Count the two kinds of reusable results separately.
   const n = Object.entries(entries).filter(([k, v]) => k.startsWith("tr:") && Array.isArray(v?.t)).length;
-  count.textContent = n === 1 ? "1 song saved" : `${n} songs saved`;
+  const names = Object.keys(entries).filter((k) => k.startsWith("name:")).length;
+  count.textContent = `${n} songs · ${names} names saved`;
 }
 
 refreshKey().then((key) => {
@@ -77,7 +78,7 @@ paintCount();
 // A translation that fails (credit ran out, key revoked) updates the status while the popup is open.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && (changes.claudeStatus || changes.claudeKey)) refreshKey();
-  if (area === "local" && Object.keys(changes).some((k) => k.startsWith("tr:"))) paintCount();
+  if (area === "local" && Object.keys(changes).some((k) => k.startsWith("tr:") || k.startsWith("name:"))) paintCount();
 });
 
 saveBtn.addEventListener("click", async () => {
@@ -114,7 +115,7 @@ fileInput.addEventListener("change", async () => {
   if (!file) return;
   try {
     const { count: n } = await send({ type: "claude-cache-import", entries: JSON.parse(await file.text()) });
-    count.textContent = `Imported ${n} songs`;
+    count.textContent = `Imported ${n} cache entries`;
     setTimeout(paintCount, 1500);
   } catch {
     count.textContent = "Not a translations file";
@@ -122,7 +123,7 @@ fileInput.addEventListener("change", async () => {
 });
 
 document.getElementById("cache-clear").addEventListener("click", async () => {
-  if (!confirm("Delete all saved Claude translations and song names? Songs will be sent to Claude (and billed) again.")) return;
+  if (!confirm("Delete all saved Claude translations and names? Text will be sent to Claude (and billed) again.")) return;
   await send({ type: "claude-cache-clear" });
   paintCount();
 });

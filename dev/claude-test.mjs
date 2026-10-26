@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 // All requests are intercepted: no browser data, API key or network is used.
 let storage = { claudeKey: "test-key" };
 globalThis.chrome = {
-  runtime: { getManifest: () => ({ version: "0.5.3" }) },
+  runtime: { getManifest: () => ({ version: "0.6.0" }) },
   storage: {
     local: {
       async get(key) { return structuredClone(key === null ? storage : { [key]: storage[key] }); },
@@ -16,12 +16,12 @@ globalThis.chrome = {
 };
 const { statusForVersion, statusText } = await import("../static/claude-status.js");
 const legacyStatus = { ok: false, message: "Claude translated only 1 of 72 lines" };
-const stale = statusForVersion(legacyStatus, "0.5.3");
+const stale = statusForVersion(legacyStatus, "0.6.0");
 assert.equal(stale.ok, null);
 assert.match(statusText(stale), /older version/);
 assert.doesNotMatch(statusText(stale), /✕|1 of 72/);
-const fresh = { ok: false, message: "Invalid API key", version: "0.5.3" };
-assert.deepEqual(statusForVersion(fresh, "0.5.3"), fresh);
+const fresh = { ok: false, message: "Invalid API key", version: "0.6.0" };
+assert.deepEqual(statusForVersion(fresh, "0.6.0"), fresh);
 assert.equal(statusText(fresh), "✕ Invalid API key");
 assert.equal(statusText({ ok: null, message: "Translating…" }), "Translating…");
 console.log("stale status migration and current error visibility passed");
@@ -37,7 +37,7 @@ let respond = (text) => answer(`translated:${text}`);
 globalThis.fetch = async (_url, init) => {
   const request = JSON.parse(init.body);
   assert.equal(storage.claudeStatus.phase, "working");
-  assert.equal(storage.claudeStatus.version, "0.5.3");
+  assert.equal(storage.claudeStatus.version, "0.6.0");
   calls.push(request);
   peak = Math.max(peak, ++active);
   await new Promise((resolve) => setTimeout(resolve, 3));
@@ -58,14 +58,18 @@ const reset = () => {
 const repeated = ["朝の窓を開ける", "机に本を置く", "朝の窓を開ける", "水を飲む", "朝の窓を開ける", "外へ歩く"];
 storage.claudeStatus = legacyStatus;
 storage.claudeLastBadAnswer = { at: 1792996583019, lines: 72 };
-let result = await translate(repeated, { title: "Private title", artist: "Private artist" });
+const liveProgress = [];
+let result = await translateWithClaude({ lines: repeated, source: "ja", lang: "id", title: "Private title", artist: "Private artist" }, { onProgress: (p) => liveProgress.push(p) });
 assert.deepEqual(result.translations, repeated.map((t) => `translated:${t}`));
 assert.equal(calls.length, 4);
 assert.equal(storage.claudeLastBadAnswer, undefined);
-assert.equal(storage.claudeStatus.version, "0.5.3");
+assert.equal(storage.claudeStatus.version, "0.6.0");
 assert.equal(storage.claudeStatus.ok, true);
 assert.ok(peak <= 3);
 assert.equal(peak, 3);
+assert.deepEqual(liveProgress.map((p) => p.completed), [0, 1, 2, 3, 4]);
+assert.ok(liveProgress.every((p) => p.total === 4 && p.deadline - p.startedAt === 90_000));
+assert.equal(liveProgress[1].translations.length, 1);
 for (const request of calls) {
   assert.doesNotMatch(request.system, /lyrics|song|copyright/i);
   assert.equal(request.messages.length, 1);
@@ -90,6 +94,10 @@ assert.equal(calls.length, 4);
 for (const style of ["singable", "poetic"]) {
   await translate([repeated[0]], { style });
   assert.doesNotMatch(calls.at(-1).system, /lyrics|song|copyright/i);
+  if (style === "singable") {
+    assert.match(calls.at(-1).system, /singable adaptation/);
+    assert.doesNotMatch(calls.at(-1).system, /Never stiff or formal|words like gak|a short phrase stays a short phrase/);
+  }
 }
 await translate([repeated[0]], { lang: "en" });
 await translate([repeated[0]], { source: "ko" });
@@ -118,6 +126,17 @@ storage[oldLineKey] = { text: "expanded old line", v: 3 };
 assert.deepEqual((await translate(old)).translations, old.map((t) => `translated:${t}`));
 assert.equal(calls.length, 2);
 console.log("old refusal and previous prompt song/line cache invalidation passed");
+
+reset();
+const singableKey = "tr:id:" + createHash("sha256").update("ja\nsingable\nそうだろう").digest("hex");
+storage[singableKey] = { t: ["kan?"], v: 4 };
+await translate(["そうだろう"], { style: "singable" });
+assert.equal(calls.length, 1);
+assert.equal(storage[singableKey].v, 5);
+storage[songKey(old)] = { t: ["normal one", "normal two"], v: 4 };
+assert.deepEqual((await translate(old)).translations, ["normal one", "normal two"]);
+assert.equal(calls.length, 1);
+console.log("only Translyrics refreshes after singing-prompt change; Normal cache retained");
 
 reset();
 respond = (text) => text === "拒否"
@@ -192,3 +211,29 @@ assert.match(tr.translationSource("成功", "en"), /Claude/);
 assert.doesNotMatch(tr.translationSource("成功", "en"), /Poetic|Nano/);
 assert.match(tr.translationSource("不足", "en"), /Gemini Nano/);
 console.log("partial fallback preserves Claude results and in-flight style passed");
+
+tr.resetTranslations();
+let finishStream;
+chrome.runtime.connect = () => {
+  let listener;
+  return {
+    onMessage: { addListener(fn) { listener = fn; } }, onDisconnect: { addListener() {} }, disconnect() {},
+    postMessage() {
+      queueMicrotask(() => {
+        const startedAt = Date.now();
+        listener({ type: "progress", progress: { label: "Claude", startedAt, deadline: startedAt + 90_000,
+          next: "Penerjemah lokal", completed: 1, total: 2, translations: [{ line: "早い", text: "early result" }] } });
+      });
+      finishStream = () => listener({ type: "result", result: { translations: ["early result", "later result"] } });
+    },
+  };
+};
+tr.translateSong(["早い", "遅い"], "en");
+const early = tr.translateLine("早い", "en");
+let lateDone = false;
+const late = tr.translateLine("遅い", "en").then((value) => { lateDone = true; return value; });
+assert.equal(await early, "early result");
+assert.equal(lateDone, false);
+finishStream();
+assert.equal(await late, "later result");
+console.log("completed translations display before the full request finishes passed");

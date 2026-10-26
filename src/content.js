@@ -1,7 +1,8 @@
 import { hasJapanese, lineToRomaji } from "./romaji.js";
 import { parseLrc } from "./lrc.js";
+import { progressText, runWorkerTask } from "./job-client.js";
 import { extensionAlive, getTokenizer, tokenizerReady } from "./tokenizer.js";
-import { originalText, restoreTitles, romanizeTitles, titleRomaji } from "./titles.js";
+import { originalText, restoreTitles, romanizeTitles, romanizeTitle, resetNameCache } from "./titles.js";
 import {
   detectLanguage,
   prepareEngine,
@@ -119,6 +120,7 @@ class LyricsView {
     this.pauseScrollUntil = 0;
     this.renderedKey = "";
     this.editing = false;
+    this.lookupAbort = new AbortController();
 
     const pause = () => (this.pauseScrollUntil = Date.now() + USER_SCROLL_PAUSE_MS);
     this.onUserScroll = pause;
@@ -130,6 +132,8 @@ class LyricsView {
 
   dispose() {
     this.alive = false;
+    this.lookupAbort.abort();
+    clearInterval(this.lookupTimer);
     cancelAnimationFrame(this.raf);
     this.block.removeEventListener("wheel", this.onUserScroll);
     this.block.removeEventListener("touchmove", this.onUserScroll);
@@ -143,13 +147,16 @@ class LyricsView {
     this.track = track;
     let reply;
     try {
-      reply = await chrome.runtime.sendMessage({
-        type: this.standalone ? "find-lyrics" : "find-synced-lyrics",
-        ...track,
-      });
-    } catch {
+      this.lookupTimer = setInterval(() => this.paintLookupStatus(), 1000);
+      reply = await runWorkerTask(this.standalone ? "find-lyrics" : "find-synced-lyrics", track, (progress) => {
+        this.lookupProgress = progress;
+        this.paintLookupStatus();
+      }, this.lookupAbort.signal);
+      this.lookupError = reply?.error;
+    } catch (e) {
+      this.lookupError = e.message;
       reply = null;
-    }
+    } finally { clearInterval(this.lookupTimer); }
     if (!this.alive) return;
     const timed = reply?.lrc ? parseLrc(reply.lrc) : [];
     if (timed.length && settings.synced) {
@@ -205,7 +212,7 @@ class LyricsView {
       const msg =
         this.syncStatus === "searching"
           ? skeleton()
-          : el("div", "rl-status", "No lyrics found for this song on LRCLIB. Covers and live versions are often missing.");
+          : el("div", "rl-status", this.lookupError || "No lyrics found for this song on LRCLIB. Covers and live versions are often missing.");
       // Nothing to act on yet, so the toolbar only shows while searching.
       this.block.replaceChildren(...(this.syncStatus === "searching" ? [bar] : []), msg);
       return;
@@ -432,14 +439,22 @@ class LyricsView {
     this.trChip.title = status.detail ?? "";
   }
 
+  paintLookupStatus() {
+    if (!this.alive || this.syncStatus !== "searching" || !this.lookupChip || !this.lookupProgress) return;
+    this.lookupChip.textContent = progressText(this.lookupProgress);
+    this.lookupChip.title = this.lookupProgress.detail || "Batas waktu tahap, bukan perkiraan waktu selesai";
+  }
+
   syncBar() {
     if (this.syncStatus === "off") return null;
     const row = el("div", "rl-syncbar");
     if (this.syncStatus === "searching") {
-      row.append(el("span", "rl-chip", this.standalone ? "Looking for lyrics on LRCLIB…" : "Looking for synced lyrics…"));
+      this.lookupChip = el("span", "rl-chip rl-progress", "Menyiapkan pencarian…");
+      this.paintLookupStatus();
+      row.append(this.lookupChip);
     } else if (this.syncStatus === "none") {
       if (this.standalone) return null; // the body already says nothing was found
-      row.append(el("span", "rl-chip rl-chip-muted", "No synced version found"));
+      row.append(el("span", "rl-chip rl-chip-muted", this.lookupError || "No synced version found"));
     } else if (this.syncStatus === "plain") {
       row.append(el("span", "rl-chip rl-chip-muted", "Lyrics from LRCLIB · timing doesn't match this version"));
     } else {
@@ -611,6 +626,7 @@ async function updatePanel() {
   Object.assign(panel.root.style, { left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px" });
 
   const key = trackKey();
+  if (key) paintPanelTitle(key);
   if (!key || key === panel.key) return panel.view?.render();
   panel.key = key;
   panel.view?.dispose();
@@ -621,15 +637,18 @@ async function updatePanel() {
   panel.view = new LyricsView(block, null, "track:" + key);
   panel.view.render();
 
-  const title = navigator.mediaSession.metadata.title;
+}
+
+async function paintPanelTitle(key) {
+  const title = navigator.mediaSession?.metadata?.title || "";
+  const displayKey = JSON.stringify([key, title, settings.titles, usingClaude()]);
+  if (panel.displayKey === displayKey && panel.title.textContent) return;
+  panel.displayKey = displayKey;
   panel.title.textContent = title;
   panel.title.title = title;
-  if (settings.titles && hasJapanese(title)) {
-    try {
-      panel.title.textContent = titleRomaji(await getTokenizer(), title) ?? title;
-    } catch {
-      // keep the original title
-    }
+  if (settings.titles && usingClaude() && hasJapanese(title)) {
+    const display = await romanizeTitle(title);
+    if (panel.displayKey === displayKey && panel.title.isConnected) panel.title.textContent = display;
   }
 }
 
@@ -690,11 +709,11 @@ async function scan() {
   document.querySelectorAll(LYRICS_SELECTOR).forEach(renderLyrics);
   syncPill(syncLyricsTab());
   updatePanel();
-  if (settings.titles) {
+  if (settings.titles && usingClaude()) {
     try {
-      romanizeTitles(await getTokenizer());
+      await romanizeTitles();
     } catch {
-      // dictionary failed to load; lyrics view shows the error
+      // Keep original names when Haiku is unavailable
     }
   }
 }
@@ -738,6 +757,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
       scan();
     }
     if (changes.claudeKey) {
+      restoreTitles();
+      resetNameCache();
       // Re-translate open lyrics with (or without) Claude right away, no reload needed.
       resetTranslations();
       overridesVersion++;

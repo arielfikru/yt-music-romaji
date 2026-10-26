@@ -1,3 +1,5 @@
+import { progressText, runWorkerTask, withTimeout } from "./job-client.js";
+
 // Translation engines, best first:
 // - Claude, when an API key is set in the popup: one target line plus nearby context per request, with repeated lines reused (see claude.js).
 // - English: Gemini Nano (Prompt API) translates the song in chunks with surrounding lines as context.
@@ -121,16 +123,15 @@ const keyPrefix = (lang, source) => source + ">" + lang + "/" + style + "\u0000"
 
 // ---- Claude (via the background worker) ----
 
-async function claudeSong(lines, lang, source, song, translationStyle) {
-  const reply = await chrome.runtime.sendMessage({
-    type: "claude-translate",
+async function claudeSong(lines, lang, source, song, translationStyle, onProgress) {
+  const reply = await runWorkerTask("claude-translate", {
     lines,
     source,
     lang,
     style: translationStyle,
     title: song?.title,
     artist: song?.artist,
-  });
+  }, onProgress);
   // No reply at all: the background worker is an older build without Claude (reload the extension).
   if (!reply?.translations) {
     const e = new Error(reply?.error ?? "Background worker didn't answer; reload the extension");
@@ -171,7 +172,23 @@ export function translateSong(lines, lang, source = "ja", song = null, onStatus 
   const prefix = keyPrefix(lang, source);
   const lyrics = lines.filter((l) => l.trim()); // keep the original order; background deduplicates requests
   const statusKey = prefix + lyrics.join("\n");
-  const report = (status) => (songStatus.set(statusKey, status), onStatus(status));
+  let progressTimer;
+  let activeProgress;
+  const report = (status) => {
+    if (status.state !== "working") { clearInterval(progressTimer); progressTimer = null; }
+    songStatus.set(statusKey, status);
+    onStatus(status);
+  };
+  const showProgress = (progress) => {
+    activeProgress = progress;
+    const tick = () => report({ state: "working", text: progressText(activeProgress), detail: "Batas waktu tahap, bukan perkiraan waktu selesai" });
+    tick();
+    progressTimer ??= setInterval(tick, 1000);
+  };
+  const localProgress = (label, ms, next, completed, total) => {
+    const startedAt = Date.now();
+    showProgress({ label, startedAt, deadline: startedAt + ms, next, completed, total });
+  };
   const todo = [...new Set(lyrics)].filter((l) => !cache.has(prefix + l));
   if (!todo.length) {
     if (songStatus.has(statusKey)) onStatus(songStatus.get(statusKey));
@@ -194,10 +211,15 @@ export function translateSong(lines, lang, source = "ja", song = null, onStatus 
   (async () => {
     await claudeLoaded;
     if (claudeOn) {
-      report({ state: "working", text: `Translating with Claude · ${STYLE_NAME[translationStyle]}…`, detail: "One target with two lines before and after; repeated and saved lines are reused" });
+      localProgress(`Claude · ${STYLE_NAME[translationStyle]}`, 90_000, "Penerjemah lokal", 0, todo.length);
       try {
         // Keep song storage stable; each target is sent with a small context window.
-        const { translations: out, cached, declinedLines, fallbackError } = await claudeSong(lyrics, lang, source, song, translationStyle);
+        const { translations: out, cached, declinedLines, fallbackError } = await claudeSong(lyrics, lang, source, song, translationStyle, (progress) => {
+          showProgress(progress);
+          for (const { line, text } of progress.translations ?? []) {
+            if (pending.has(line) && !done.has(line)) settle(line, text, `Translated by Claude Haiku 5.5${STYLE_LABEL[translationStyle] ?? ""}`);
+          }
+        });
         lyrics.forEach((l, j) => {
           if (!pending.has(l) || done.has(l) || out[j] == null) return; // repeats keep the first; skipped lines go on-device
           settle(l, out[j], `Translated by Claude Haiku 5.5${STYLE_LABEL[translationStyle] ?? ""}`);
@@ -230,34 +252,45 @@ export function translateSong(lines, lang, source = "ja", song = null, onStatus 
     } else {
       report({ state: "device", text: "On-device translation", detail: "Add a Claude API key in the extension popup for better translations" });
     }
-    const engine = todo.every((l) => done.has(l)) ? null : await engineFor(lang, source);
+    if (todo.every((l) => done.has(l))) return;
+    localProgress("Memeriksa penerjemah lokal", 5000, "Chrome Translator", done.size, todo.length);
+    const engine = await withTimeout(engineFor(lang, source), 5000, "Local engine check timed out").catch(() => "translator");
     if (engine === "nano") {
       const remaining = todo.filter((l) => !done.has(l));
-      const base = await ensureNano().catch(() => null);
+      localProgress("Menyiapkan Gemini Nano", 60_000, "Chrome Translator", done.size, todo.length);
+      const base = await withTimeout(ensureNano(), 60_000, "Gemini Nano setup timed out").catch(() => null);
       for (let i = 0; base && i < remaining.length; i += CHUNK) {
         const chunk = remaining.slice(i, i + CHUNK);
         const context = remaining.slice(Math.max(0, i - CONTEXT), i);
         try {
-          const out = await nanoChunk(base, context, chunk);
+          localProgress("Gemini Nano", 20_000, "Chrome Translator untuk batch ini", done.size, todo.length);
+          const out = await withTimeout(nanoChunk(base, context, chunk), 20_000, "Gemini Nano timed out");
           chunk.forEach((l, j) => settle(l, out[j], "Translated on this device by Gemini Nano"));
         } catch {
           // fall through: these lines get the line-by-line translator below
         }
       }
     }
-    // Line-by-line for Indonesian, and for anything Gemini Nano could not handle.
-    for (const [l, d] of pending) {
-      if (done.has(l)) continue;
+    // Prepare the fallback once; a missing model must not trigger a download per line.
+    const remaining = [...pending].filter(([l]) => !done.has(l));
+    if (remaining.length) {
+      localProgress("Menyiapkan Chrome Translator", 60_000, "Selesaikan dengan hasil tersedia", done.size, todo.length);
+      let translator;
       try {
-        const t = await ensureTranslator(lang, undefined, source);
-        const out = await t.translate(l);
-        settle(l, lang === "id" ? normalizeIndonesian(out) : out, "Translated on this device by Chrome's translator");
-      } catch (e) {
-        d.reject(e);
+        translator = await withTimeout(ensureTranslator(lang, undefined, source), 60_000, "Chrome Translator setup timed out");
+      } catch (e) { for (const [, d] of remaining) d.reject(e); }
+      if (translator) for (let i = 0; i < remaining.length; i++) {
+        const [l, d] = remaining[i];
+        localProgress("Chrome Translator", 10_000, i < remaining.length - 1 ? "Baris berikutnya" : "Selesaikan terjemahan", done.size, todo.length);
+        try {
+          const out = await withTimeout(translator.translate(l), 10_000, "This line timed out");
+          settle(l, lang === "id" ? normalizeIndonesian(out) : out, "Translated on this device by Chrome's translator");
+        } catch (e) { d.reject(e); }
       }
     }
     const failed = todo.filter((l) => !done.has(l)).length;
     if (failed) report({ state: "failed", text: `${failed} lines unavailable`, detail: "Claude and the on-device translator could not translate these lines. Other translations are kept." });
+    else report({ state: claudeOn ? "partial" : "device", text: claudeOn ? "Selesai · Claude + penerjemah lokal" : "Selesai · penerjemah lokal", detail: "Semua baris tersedia" });
   })().catch((e) => {
     for (const [l, d] of pending) if (!done.has(l)) d.reject(e);
     report({ state: "failed", text: "Translation failed", detail: e.message });

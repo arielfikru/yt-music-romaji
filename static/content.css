@@ -218,3 +218,6 @@ ytmusic-player-page tp-yt-paper-tab.rl-tab-forced.rl-tab-active {
 }
 .rl-pill:hover { background: #303030; }
 .rl-pill:focus-visible { outline: 2px solid #3ea6ff; outline-offset: 2px; }
+
+/* Long-running stages wrap inside the narrow lyrics panel. */
+.rl-progress, .rl-tr-status { border-radius: 12px; white-space: normal; line-height: 1.5; overflow-wrap: anywhere; }
