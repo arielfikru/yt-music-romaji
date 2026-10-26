@@ -2,7 +2,15 @@ import { hasJapanese, lineToRomaji } from "./romaji.js";
 import { parseLrc } from "./lrc.js";
 import { extensionAlive, getTokenizer, tokenizerReady } from "./tokenizer.js";
 import { originalText, restoreTitles, romanizeTitles, titleRomaji } from "./titles.js";
-import { detectLanguage, prepareEngine, translateLine, translateSong, translatorSupported, usingClaude } from "./translate.js";
+import {
+  detectLanguage,
+  prepareEngine,
+  resetTranslations,
+  translateLine,
+  translateSong,
+  translatorSupported,
+  usingClaude,
+} from "./translate.js";
 
 // YT Music renders lyrics as one yt-formatted-string whose text has "\n" between lines.
 const LYRICS_SELECTOR = "ytmusic-player-page ytmusic-description-shelf-renderer yt-formatted-string.description";
@@ -676,6 +684,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local") {
     if (changes.overrides) {
       overrides = changes.overrides.newValue ?? {};
+      overridesVersion++;
+      scan();
+    }
+    if (changes.claudeKey) {
+      // Re-translate open lyrics with (or without) Claude right away, no reload needed.
+      resetTranslations();
       overridesVersion++;
       scan();
     }

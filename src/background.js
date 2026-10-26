@@ -1,4 +1,4 @@
-import { cacheEntries, clearCache, importCache, translateWithClaude } from "./claude.js";
+import { cacheEntries, checkKey, clearCache, importCache, translateWithClaude } from "./claude.js";
 import { pickByTitle, pickCandidate, searchQueries } from "./lrc.js";
 
 const API = "https://lrclib.net/api/search?";
@@ -49,6 +49,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     "find-synced-lyrics": () => findSynced(msg).then((lrc) => ({ lrc })),
     "find-lyrics": () => findByTitle(msg),
     "claude-translate": () => translateWithClaude(msg),
+    "claude-check-key": () => checkKey(msg.key),
     "claude-cache-export": () => cacheEntries().then((entries) => ({ entries })),
     "claude-cache-import": () => importCache(msg.entries).then((count) => ({ count })),
     "claude-cache-clear": () => clearCache().then(() => ({})),

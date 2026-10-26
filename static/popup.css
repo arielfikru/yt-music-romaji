@@ -43,6 +43,11 @@ h1 { margin: 0; font-size: 15px; font-weight: 600; }
 .claude summary { padding: 4px 0 8px; cursor: pointer; }
 #claude-state { float: right; color: #aaa; font-size: 12px; }
 #claude-state.on { color: #3ea6ff; }
+#claude-state.bad { color: #ff7b7b; }
+.key-status { margin: 6px 0 0; font-size: 12px; color: #aaa; }
+.key-status:empty { display: none; }
+.key-status.ok { color: #7bd88f; }
+.key-status.bad { color: #ff7b7b; }
 .key-row, .cache-row { display: flex; align-items: center; gap: 6px; }
 .key-row input {
   flex: 1;
@@ -55,7 +60,8 @@ h1 { margin: 0; font-size: 15px; font-weight: 600; }
   font: inherit;
 }
 .cache-row { margin-top: 10px; font-size: 12px; color: #aaa; }
-.cache-row span { flex: 1; }
+.cache-row { flex-wrap: wrap; }
+.cache-row span { flex-basis: 100%; }
 .btn {
   padding: 5px 9px;
   border: 0;

@@ -9,12 +9,18 @@ const cache = new Map(); // lang + line -> Promise<string>
 
 // Whether a Claude API key is set; kept in sync so the toolbar can ask without awaiting.
 let claudeOn = false;
+// translateSong waits for this, so a song rendered right at page load doesn't miss the key.
+const claudeLoaded = globalThis.chrome?.storage
+  ? chrome.storage.local.get("claudeKey").then(({ claudeKey }) => (claudeOn = Boolean(claudeKey)))
+  : Promise.resolve();
 if (globalThis.chrome?.storage) {
-  chrome.storage.local.get("claudeKey", ({ claudeKey }) => (claudeOn = Boolean(claudeKey)));
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === "local" && changes.claudeKey) claudeOn = Boolean(changes.claudeKey.newValue);
   });
 }
+
+// Forget translations made so far, e.g. on-device ones from before a Claude key was saved.
+export const resetTranslations = () => cache.clear();
 export const usingClaude = () => claudeOn;
 
 export const translatorSupported = () => claudeOn || "Translator" in self || "LanguageModel" in self;
@@ -143,6 +149,7 @@ export function translateSong(lines, lang, source = "ja") {
 
   const done = new Set();
   (async () => {
+    await claudeLoaded;
     if (claudeOn) {
       try {
         // Always the full song, so it gets the same storage key (and context) every time.

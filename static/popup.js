@@ -30,14 +30,24 @@ slider.addEventListener("input", () => {
 // ---- Claude translation ----
 const keyInput = document.getElementById("claude-key");
 const keyState = document.getElementById("claude-state");
+const keyStatus = document.getElementById("claude-status");
+const saveBtn = document.getElementById("claude-save");
 const count = document.getElementById("cache-count");
 const fileInput = document.getElementById("cache-file");
 const send = (msg) => chrome.runtime.sendMessage(msg);
 
-function paintKey(key) {
-  keyInput.value = key ?? "";
-  keyState.textContent = key ? "On" : "Off";
-  keyState.classList.toggle("on", Boolean(key));
+function paintKey(key, status) {
+  const bad = Boolean(key) && status?.ok === false;
+  keyState.textContent = !key ? "Off" : bad ? "Error" : "On";
+  keyState.className = !key ? "" : bad ? "bad" : "on";
+  keyStatus.className = "key-status " + (!key ? "" : bad ? "bad" : status?.ok ? "ok" : "");
+  keyStatus.textContent = !key ? "" : status ? (status.ok ? "✓ " : "✕ ") + status.message : "Not checked yet";
+}
+
+async function refreshKey() {
+  const { claudeKey, claudeStatus } = await chrome.storage.local.get(["claudeKey", "claudeStatus"]);
+  paintKey(claudeKey, claudeStatus);
+  return claudeKey;
 }
 
 async function paintCount() {
@@ -46,17 +56,32 @@ async function paintCount() {
   count.textContent = n === 1 ? "1 song saved" : `${n} songs saved`;
 }
 
-chrome.storage.local.get("claudeKey", ({ claudeKey }) => {
-  paintKey(claudeKey);
-  if (!claudeKey) document.getElementById("claude").open = true;
+refreshKey().then((key) => {
+  keyInput.value = key ?? "";
+  if (!key) document.getElementById("claude").open = true;
 });
 paintCount();
+// A translation that fails (credit ran out, key revoked) updates the status while the popup is open.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && (changes.claudeStatus || changes.claudeKey)) refreshKey();
+  if (area === "local" && Object.keys(changes).some((k) => k.startsWith("tr:"))) paintCount();
+});
 
-document.getElementById("claude-save").addEventListener("click", async () => {
+saveBtn.addEventListener("click", async () => {
   const key = keyInput.value.trim();
-  if (key) await chrome.storage.local.set({ claudeKey: key });
-  else await chrome.storage.local.remove("claudeKey");
-  paintKey(key);
+  if (!key) {
+    await chrome.storage.local.remove(["claudeKey", "claudeStatus"]);
+    return refreshKey();
+  }
+  saveBtn.disabled = true;
+  keyStatus.className = "key-status";
+  keyStatus.textContent = "Checking key…";
+  const { ok } = await send({ type: "claude-check-key", key });
+  // Save even a failing key: the problem may be temporary (offline), and the status says what's wrong.
+  await chrome.storage.local.set({ claudeKey: key });
+  saveBtn.disabled = false;
+  await refreshKey();
+  if (ok) keyStatus.textContent = "✓ Key works. Lyrics already open are re-translated now.";
 });
 
 document.getElementById("cache-export").addEventListener("click", async () => {
