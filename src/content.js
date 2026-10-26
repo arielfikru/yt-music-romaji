@@ -8,6 +8,7 @@ import {
   resetTranslations,
   translateLine,
   translateSong,
+  translationSource,
   translatorSupported,
   usingClaude,
 } from "./translate.js";
@@ -129,6 +130,7 @@ class LyricsView {
     await new Promise((r) => setTimeout(r, 600));
     const track = this.alive && currentTrack(this.src);
     if (!track) return this.setStatus("none");
+    this.track = track;
     let reply;
     try {
       reply = await chrome.runtime.sendMessage({
@@ -212,7 +214,12 @@ class LyricsView {
 
     this.translating = settings.translate && this.source !== settings.lang;
     if (this.translating) {
-      translateSong(this.lines.map((l) => l.text).filter((t) => this.needsTranslation(t)), settings.lang, this.source);
+      translateSong(
+        this.lines.map((l) => l.text).filter((t) => this.needsTranslation(t)),
+        settings.lang,
+        this.source,
+        this.track ?? currentTrack(this.src)
+      );
     }
     this.rows = this.lines.map((line) => this.row(tk, line));
     const body = el("div", "rl-body");
@@ -241,7 +248,10 @@ class LyricsView {
     if (this.translating && this.needsTranslation(text)) {
       const tr = el("div", "rl-tr", "…");
       translateLine(text, settings.lang, this.source).then(
-        (t) => (tr.textContent = t),
+        (t) => {
+          tr.textContent = t;
+          tr.title = translationSource(text, settings.lang, this.source);
+        },
         () => tr.remove()
       );
       r.append(tr);

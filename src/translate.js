@@ -6,6 +6,7 @@
 
 const translators = new Map(); // target language -> Promise<Translator>
 const cache = new Map(); // lang + line -> Promise<string>
+const sources = new Map(); // lang + line -> which engine translated it, shown on hover
 
 // Whether a Claude API key is set; kept in sync so the toolbar can ask without awaiting.
 let claudeOn = false;
@@ -20,7 +21,7 @@ if (globalThis.chrome?.storage) {
 }
 
 // Forget translations made so far, e.g. on-device ones from before a Claude key was saved.
-export const resetTranslations = () => cache.clear();
+export const resetTranslations = () => (cache.clear(), sources.clear());
 export const usingClaude = () => claudeOn;
 
 export const translatorSupported = () => claudeOn || "Translator" in self || "LanguageModel" in self;
@@ -110,8 +111,8 @@ async function nanoChunk(base, context, lines) {
 
 // ---- Claude (via the background worker) ----
 
-async function claudeSong(lines, lang, source) {
-  const reply = await chrome.runtime.sendMessage({ type: "claude-translate", lines, source, lang });
+async function claudeSong(lines, lang, source, song) {
+  const reply = await chrome.runtime.sendMessage({ type: "claude-translate", lines, source, lang, title: song?.title, artist: song?.artist });
   // No reply at all: the background worker is an older build without Claude (reload the extension).
   if (!reply?.translations) throw new Error(reply?.error ?? "Background worker didn't answer; reload the extension");
   return reply.translations;
@@ -136,10 +137,11 @@ export async function prepareEngine(lang, onProgress, source = "ja") {
 }
 
 // Starts translating a whole song so lines share context. Fills the cache that translateLine reads.
-export function translateSong(lines, lang, source = "ja") {
+// `song` ({ title, artist }) helps Claude recognise the song and its meaning.
+export function translateSong(lines, lang, source = "ja", song = null) {
   const prefix = source + ">" + lang + "\u0000";
-  const song = lines.filter((l) => l.trim()); // repeats kept: Claude reads the song as sung
-  const todo = [...new Set(song)].filter((l) => !cache.has(prefix + l));
+  const lyrics = lines.filter((l) => l.trim()); // repeats kept: Claude reads the song as sung
+  const todo = [...new Set(lyrics)].filter((l) => !cache.has(prefix + l));
   if (!todo.length) return;
 
   const pending = new Map(todo.map((l) => [l, Promise.withResolvers()]));
@@ -149,19 +151,26 @@ export function translateSong(lines, lang, source = "ja") {
   }
 
   const done = new Set();
+  let fallbackWhy = ""; // why Claude didn't translate a line, added to the on-device lines' hover text
+  const settle = (l, text, engine) => {
+    sources.set(prefix + l, engine + fallbackWhy);
+    pending.get(l).resolve(text);
+    done.add(l);
+  };
   (async () => {
     await claudeLoaded;
     if (claudeOn) {
       try {
         // Always the full song, so it gets the same storage key (and context) every time.
-        const out = await claudeSong(song, lang, source);
-        song.forEach((l, j) => {
-          if (!pending.has(l) || done.has(l)) return; // a repeated line keeps its first translation
-          pending.get(l).resolve(out[j]);
-          done.add(l);
+        const out = await claudeSong(lyrics, lang, source, song);
+        lyrics.forEach((l, j) => {
+          if (!pending.has(l) || done.has(l) || out[j] == null) return; // repeats keep the first; skipped lines go on-device
+          settle(l, out[j], "Translated by Claude Haiku 5.5");
         });
+        fallbackWhy = " (Claude skipped this line)";
       } catch (e) {
         console.warn("[romaji-lyrics] Claude translation failed, using on-device:", e.message);
+        fallbackWhy = ` (Claude failed: ${e.message})`;
       }
     }
     const engine = todo.every((l) => done.has(l)) ? null : await engineFor(lang, source);
@@ -172,7 +181,7 @@ export function translateSong(lines, lang, source = "ja") {
         const context = todo.slice(Math.max(0, i - CONTEXT), i);
         try {
           const out = await nanoChunk(base, context, chunk);
-          chunk.forEach((l, j) => (pending.get(l).resolve(out[j]), done.add(l)));
+          chunk.forEach((l, j) => settle(l, out[j], "Translated on this device by Gemini Nano"));
         } catch {
           // fall through: these lines get the line-by-line translator below
         }
@@ -184,13 +193,16 @@ export function translateSong(lines, lang, source = "ja") {
       try {
         const t = await ensureTranslator(lang, undefined, source);
         const out = await t.translate(l);
-        d.resolve(lang === "id" ? normalizeIndonesian(out) : out);
+        settle(l, lang === "id" ? normalizeIndonesian(out) : out, "Translated on this device by Chrome's translator");
       } catch (e) {
         d.reject(e);
       }
     }
   })();
 }
+
+// Hover text for a translated line: which engine made it, and why Claude didn't when it fell back.
+export const translationSource = (line, lang, source = "ja") => sources.get(source + ">" + lang + "\u0000" + line) ?? "";
 
 export function translateLine(line, lang, source = "ja") {
   const key = source + ">" + lang + "\u0000" + line;

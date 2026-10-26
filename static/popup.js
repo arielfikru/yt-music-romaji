@@ -58,7 +58,7 @@ async function refreshKey() {
 
 async function paintCount() {
   const { entries = {} } = (await send({ type: "claude-cache-export" }).catch(() => null)) ?? {};
-  const n = Object.keys(entries).length;
+  const n = Object.keys(entries).filter((k) => k.startsWith("tr:")).length;
   count.textContent = n === 1 ? "1 song saved" : `${n} songs saved`;
 }
 
@@ -115,7 +115,7 @@ fileInput.addEventListener("change", async () => {
 });
 
 document.getElementById("cache-clear").addEventListener("click", async () => {
-  if (!confirm("Delete all saved Claude translations? Songs will be translated (and billed) again.")) return;
+  if (!confirm("Delete all saved Claude translations and song names? Songs will be sent to Claude (and billed) again.")) return;
   await send({ type: "claude-cache-clear" });
   paintCount();
 });
