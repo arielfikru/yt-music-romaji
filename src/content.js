@@ -2,7 +2,7 @@ import { hasJapanese, lineToRomaji } from "./romaji.js";
 import { parseLrc } from "./lrc.js";
 import { extensionAlive, getTokenizer, tokenizerReady } from "./tokenizer.js";
 import { originalText, restoreTitles, romanizeTitles, titleRomaji } from "./titles.js";
-import { detectLanguage, prepareEngine, translateLine, translateSong, translatorSupported } from "./translate.js";
+import { detectLanguage, prepareEngine, translateLine, translateSong, translatorSupported, usingClaude } from "./translate.js";
 
 // YT Music renders lyrics as one yt-formatted-string whose text has "\n" between lines.
 const LYRICS_SELECTOR = "ytmusic-player-page ytmusic-description-shelf-renderer yt-formatted-string.description";
@@ -334,7 +334,9 @@ class LyricsView {
 
     const tr = button("rl-btn rl-tr-btn", null, () => this.toggleTranslate(tr), {
       "aria-pressed": String(settings.translate),
-      title: translatorSupported()
+      title: usingClaude()
+        ? "Translate with Claude (saved on this computer, each song is only sent once)"
+        : translatorSupported()
         ? "Translate on this device (English uses Gemini Nano when available)"
         : "Needs Chrome 138+ (built-in translator)",
     });

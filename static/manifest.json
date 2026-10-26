@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "YT Music Romaji Lyrics",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Romaji, synced lyrics and translation for Japanese songs on YouTube Music.",
   "permissions": [
-    "storage"
+    "storage",
+    "unlimitedStorage"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -50,6 +51,7 @@
     "type": "module"
   },
   "host_permissions": [
-    "https://lrclib.net/*"
+    "https://lrclib.net/*",
+    "https://api.anthropic.com/*"
   ]
 }

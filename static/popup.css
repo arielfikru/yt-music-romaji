@@ -39,6 +39,35 @@ h1 { margin: 0; font-size: 15px; font-weight: 600; }
 .a-small { font-size: 11px; color: #aaa; }
 .a-large { font-size: 17px; color: #aaa; }
 .hint { margin: 4px 0 0; color: #aaa; font-size: 12px; }
+.claude { margin: 0 0 10px; padding: 8px 0 4px; border-top: 1px solid rgba(255, 255, 255, 0.1); }
+.claude summary { padding: 4px 0 8px; cursor: pointer; }
+#claude-state { float: right; color: #aaa; font-size: 12px; }
+#claude-state.on { color: #3ea6ff; }
+.key-row, .cache-row { display: flex; align-items: center; gap: 6px; }
+.key-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  background: #0f0f0f;
+  color: #fff;
+  font: inherit;
+}
+.cache-row { margin-top: 10px; font-size: 12px; color: #aaa; }
+.cache-row span { flex: 1; }
+.btn {
+  padding: 5px 9px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font: 500 12px/1 inherit;
+  font-family: inherit;
+  cursor: pointer;
+}
+.btn:hover { background: rgba(255, 255, 255, 0.2); }
+.btn:focus-visible, .key-row input:focus-visible { outline: 2px solid #3ea6ff; outline-offset: 2px; }
 .switches { margin: 6px 0 10px; border-top: 1px solid rgba(255, 255, 255, 0.1); padding-top: 8px; }
 .switch { display: flex; align-items: center; justify-content: space-between; padding: 7px 0; cursor: pointer; }
 .switch input {

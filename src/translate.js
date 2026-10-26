@@ -1,11 +1,23 @@
-// On-device translation, nothing leaves the machine.
+// Translation engines, best first:
+// - Claude, when an API key is set in the popup: the whole song in one request, stored permanently (see claude.js).
 // - English: Gemini Nano (Prompt API) translates the song in chunks with surrounding lines as context.
 // - Indonesian, or when Gemini Nano is unavailable: Chrome's Translator API, line by line.
+// The on-device engines also cover any song Claude fails on.
 
 const translators = new Map(); // target language -> Promise<Translator>
 const cache = new Map(); // lang + line -> Promise<string>
 
-export const translatorSupported = () => "Translator" in self || "LanguageModel" in self;
+// Whether a Claude API key is set; kept in sync so the toolbar can ask without awaiting.
+let claudeOn = false;
+if (globalThis.chrome?.storage) {
+  chrome.storage.local.get("claudeKey", ({ claudeKey }) => (claudeOn = Boolean(claudeKey)));
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes.claudeKey) claudeOn = Boolean(changes.claudeKey.newValue);
+  });
+}
+export const usingClaude = () => claudeOn;
+
+export const translatorSupported = () => claudeOn || "Translator" in self || "LanguageModel" in self;
 
 // The translator mixes formal and casual pronouns line by line ("saya" here, "aku" there).
 // Song lyrics read naturally in casual Indonesian, so make them all aku/kamu.
@@ -90,9 +102,17 @@ async function nanoChunk(base, context, lines) {
   }
 }
 
+// ---- Claude (via the background worker) ----
+
+async function claudeSong(lines, lang, source) {
+  const reply = await chrome.runtime.sendMessage({ type: "claude-translate", lines, source, lang });
+  if (!reply?.translations) throw new Error(reply?.error ?? "No reply from the background worker");
+  return reply.translations;
+}
+
 // ---- public API ----
 
-// Which engine a language uses on this machine: "nano", "translator" or null.
+// Which on-device engine a language uses on this machine: "nano", "translator" or null.
 export async function engineFor(lang, source = "ja") {
   if (source === "ja" && lang === "en" && (await nanoAvailability()) !== "unavailable") return "nano";
   return "Translator" in self ? "translator" : null;
@@ -101,6 +121,7 @@ export async function engineFor(lang, source = "ja") {
 // Call from a click handler the first time: creating either engine may download a model,
 // which Chrome only allows after a user gesture. `onProgress` gets 0..1 while downloading.
 export async function prepareEngine(lang, onProgress, source = "ja") {
+  if (claudeOn) return "claude";
   const engine = await engineFor(lang, source);
   if (engine === "nano") return ensureNano(onProgress).then(() => engine);
   if (engine === "translator") return ensureTranslator(lang, onProgress, source).then(() => engine);
@@ -110,7 +131,8 @@ export async function prepareEngine(lang, onProgress, source = "ja") {
 // Starts translating a whole song so lines share context. Fills the cache that translateLine reads.
 export function translateSong(lines, lang, source = "ja") {
   const prefix = source + ">" + lang + "\u0000";
-  const todo = [...new Set(lines.filter((l) => l.trim()))].filter((l) => !cache.has(prefix + l));
+  const song = lines.filter((l) => l.trim()); // repeats kept: Claude reads the song as sung
+  const todo = [...new Set(song)].filter((l) => !cache.has(prefix + l));
   if (!todo.length) return;
 
   const pending = new Map(todo.map((l) => [l, Promise.withResolvers()]));
@@ -121,7 +143,20 @@ export function translateSong(lines, lang, source = "ja") {
 
   const done = new Set();
   (async () => {
-    const engine = await engineFor(lang, source);
+    if (claudeOn) {
+      try {
+        // Always the full song, so it gets the same storage key (and context) every time.
+        const out = await claudeSong(song, lang, source);
+        song.forEach((l, j) => {
+          if (!pending.has(l) || done.has(l)) return; // a repeated line keeps its first translation
+          pending.get(l).resolve(out[j]);
+          done.add(l);
+        });
+      } catch (e) {
+        console.warn("[romaji-lyrics] Claude translation failed, using on-device:", e.message);
+      }
+    }
+    const engine = todo.every((l) => done.has(l)) ? null : await engineFor(lang, source);
     if (engine === "nano") {
       const base = await ensureNano().catch(() => null);
       for (let i = 0; base && i < todo.length; i += CHUNK) {

@@ -40,7 +40,24 @@
     <label class="switch"><span>Romaji song titles</span><input type="checkbox" data-key="titles"></label>
   </div>
 
-  <p class="hint">Synced lyrics come from LRCLIB. Translation runs on this device: English uses Gemini Nano for context-aware results, Indonesian uses Chrome's translator.</p>
+  <details class="claude" id="claude">
+    <summary>Claude translation <span id="claude-state"></span></summary>
+    <label class="label" for="claude-key">Anthropic API key</label>
+    <div class="key-row">
+      <input type="password" id="claude-key" placeholder="sk-ant-…" autocomplete="off" spellcheck="false">
+      <button type="button" class="btn" id="claude-save">Save</button>
+    </div>
+    <p class="hint">Each song is translated once, as a whole, with Claude Haiku 5.5 in casual language, then kept on this computer. The key stays in this browser.</p>
+    <div class="cache-row">
+      <span id="cache-count">0 songs saved</span>
+      <button type="button" class="btn" id="cache-export">Export</button>
+      <button type="button" class="btn" id="cache-import">Import</button>
+      <button type="button" class="btn" id="cache-clear">Clear</button>
+      <input type="file" id="cache-file" accept="application/json" hidden>
+    </div>
+  </details>
+
+  <p class="hint">Synced lyrics come from LRCLIB. Without a Claude key, translation runs on this device: English uses Gemini Nano, Indonesian uses Chrome's translator.</p>
   <script src="popup.js"></script>
 </body>
 </html>

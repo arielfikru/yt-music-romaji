@@ -1,3 +1,4 @@
+import { cacheEntries, clearCache, importCache, translateWithClaude } from "./claude.js";
 import { pickByTitle, pickCandidate, searchQueries } from "./lrc.js";
 
 const API = "https://lrclib.net/api/search?";
@@ -44,12 +45,15 @@ async function findByTitle({ title, artist, duration }) {
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  const job =
-    msg?.type === "find-synced-lyrics"
-      ? findSynced(msg).then((lrc) => ({ lrc }))
-      : msg?.type === "find-lyrics"
-        ? findByTitle(msg)
-        : null;
+  const handlers = {
+    "find-synced-lyrics": () => findSynced(msg).then((lrc) => ({ lrc })),
+    "find-lyrics": () => findByTitle(msg),
+    "claude-translate": () => translateWithClaude(msg),
+    "claude-cache-export": () => cacheEntries().then((entries) => ({ entries })),
+    "claude-cache-import": () => importCache(msg.entries).then((count) => ({ count })),
+    "claude-cache-clear": () => clearCache().then(() => ({})),
+  };
+  const job = handlers[msg?.type]?.();
   if (!job) return;
   job.then(sendResponse, (e) => sendResponse({ error: String(e) }));
   return true; // keeps the channel open for the async reply

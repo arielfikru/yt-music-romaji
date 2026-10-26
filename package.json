@@ -1,6 +1,6 @@
 {
   "name": "yt-music-romaji",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Chrome extension: romaji, synced lyrics and translation for Japanese songs on YouTube Music",
   "scripts": {
     "test": "node test.mjs && node dev/lrc-test.mjs",
@@ -8,6 +8,7 @@
   },
   "license": "MIT",
   "devDependencies": {
+    "@anthropic-ai/sdk": "^1.3.0",
     "esbuild": "^0.28.2",
     "kuromoji": "^0.1.2",
     "wanakana": "^5.3.1"
