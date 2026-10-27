@@ -492,14 +492,6 @@ class LyricsView {
     const main = el("div", "rl-row");
     if (this.japanese) main.append(seg, tr, edit);
     else main.append(tr);
-    if (usingClaude()) {
-      const about = button("rl-btn", null, () => chrome.storage.sync.set({ about: !settings.about }), {
-        "aria-pressed": String(settings.about),
-        title: "Ringkasan isi lagu, mood dan tema (Claude, sekali per lagu, disimpan)",
-      });
-      about.append(icon(ICON_INFO), el("span", null, "Tentang"));
-      main.append(about);
-    }
 
     const actions = el("div", "rl-row");
     for (const [label, delta, name] of [["A−", -FONT_STEP, "Smaller text"], ["A+", FONT_STEP, "Larger text"]]) {
@@ -515,6 +507,15 @@ class LyricsView {
     const copyLabel = el("span", null, "Copy romaji");
     copy.append(icon(ICON_COPY), copyLabel);
     if (this.japanese) actions.append(copy);
+    // Next to Copy romaji: the first row is already full of display controls.
+    if (usingClaude()) {
+      const about = button("rl-btn", null, () => chrome.storage.sync.set({ about: !settings.about }), {
+        "aria-pressed": String(settings.about),
+        title: "Ringkasan isi lagu, mood dan tema (Claude, sekali per lagu, disimpan)",
+      });
+      about.append(icon(ICON_INFO), el("span", null, "Tentang lagu"));
+      actions.append(about);
+    }
 
     bar.append(main, actions);
     // Translation settings sit next to the lyrics they change, only while translating.
