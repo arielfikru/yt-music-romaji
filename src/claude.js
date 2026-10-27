@@ -236,7 +236,7 @@ async function callClaude(lines, source, lang, style, onProgress, parentSignal, 
   let next = 0;
   let serviceError = "";
   const report = () => onProgress({ label: `Claude · ${STYLE_NAMES[style]}`, startedAt, deadline,
-    next: "Tombol coba lagi", completed: results.size, total: unique.length,
+    next: "Selesai", completed: results.size, total: unique.length,
     translations: [...results].filter(([, result]) => result.text).map(([line, result]) => ({ line, text: result.text })),
   });
   report();

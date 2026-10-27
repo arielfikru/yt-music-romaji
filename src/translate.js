@@ -217,7 +217,7 @@ export function translateSong(lines, lang, source = "ja", song = null, onStatus 
   (async () => {
     await claudeLoaded;
     if (claudeOn) {
-      localProgress(`Claude · ${STYLE_NAME[translationStyle]}`, 180_000, "Tombol coba lagi", 0, todo.length);
+      localProgress(`Claude · ${STYLE_NAME[translationStyle]}`, 180_000, "Selesai", 0, todo.length);
       try {
         // Keep song storage stable; each target is sent with a small context window.
         const { translations: out, cached, declinedLines, fallbackError } = await claudeSong(lyrics, lang, source, song, translationStyle, (progress) => {
