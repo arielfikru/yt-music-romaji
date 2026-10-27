@@ -39,7 +39,18 @@ const FONT_STEP = 2;
 const OFFSET_STEP = 0.5;
 const USER_SCROLL_PAUSE_MS = 4000;
 
-const DEFAULTS = { mode: "below", fontSize: 16, translate: false, lang: "id", style: "plain", titles: true, synced: true };
+const DEFAULTS = { mode: "below", fontSize: 16, translate: false, lang: "id", style: "plain", titles: true, synced: true, about: false };
+const MOOD_LABELS = {
+  id: { sad: "Sedih", happy: "Ceria", romantic: "Romantis", longing: "Rindu", hopeful: "Penuh harapan", energetic: "Semangat",
+    angry: "Marah", dark: "Kelam", calm: "Tenang", bittersweet: "Pahit-manis", playful: "Jenaka", absurd: "Absurd" },
+  en: { sad: "Sad", happy: "Happy", romantic: "Romantic", longing: "Longing", hopeful: "Hopeful", energetic: "Energetic",
+    angry: "Angry", dark: "Dark", calm: "Calm", bittersweet: "Bittersweet", playful: "Playful", absurd: "Absurd" },
+};
+const MEANING_LABELS = {
+  id: { ambiguous: "Makna samar", nonsense: "Tanpa makna jelas" },
+  en: { ambiguous: "Open to interpretation", nonsense: "Nonsense lyrics" },
+};
+const summaries = new Map(); // lang + lyrics -> Promise of the background reply
 let settings = { ...DEFAULTS };
 
 const romajiCache = new Map();
@@ -94,6 +105,7 @@ function icon(d) {
 const ICON_COPY = "M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z";
 const ICON_EDIT = "M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z";
 const ICON_RETRY = "M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z";
+const ICON_INFO = "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z";
 const ICON_TRANSLATE = "m12.87 15.07-2.54-2.51.03-.03A17.52 17.52 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7 1.62-4.33L19.12 17h-3.24z";
 
 function currentTrack(src = null) {
@@ -197,7 +209,7 @@ class LyricsView {
 
   // Re-renders only when something visible changed; cheap to call on every scan.
   async render() {
-    const key = [settings.mode, settings.fontSize, settings.translate, settings.lang, settings.style, this.syncStatus, this.offset, this.editing, overridesVersion].join("|");
+    const key = [settings.mode, settings.fontSize, settings.translate, settings.lang, settings.style, settings.about, this.syncStatus, this.offset, this.editing, overridesVersion].join("|");
     if (key === this.renderedKey) return;
     this.renderedKey = key;
 
@@ -237,7 +249,8 @@ class LyricsView {
     this.rows = this.lines.map((line) => this.row(tk, line));
     const body = el("div", "rl-body");
     body.append(...this.rows);
-    this.block.replaceChildren(bar, body);
+    const about = this.aboutCard();
+    this.block.replaceChildren(bar, ...(about ? [about] : []), body);
     this.activeIdx = -1;
     if (this.synced) this.startSync();
   }
@@ -265,6 +278,49 @@ class LyricsView {
     }
     if (this.synced) this.makeSeekable(r, line);
     return r;
+  }
+
+  // What the song is about: mood, how much sense it makes, and a short summary. Waits for the
+  // synced-lyrics search so one song isn't summarized twice (YT Music's text, then LRCLIB's).
+  aboutCard() {
+    if (!settings.about || !usingClaude() || !this.lines.length) return null;
+    const lang = settings.lang;
+    const card = el("div", "rl-about");
+    card.setAttribute("role", "region");
+    card.setAttribute("aria-label", "About this song");
+    if (this.syncStatus === "searching") {
+      card.append(el("div", "rl-about-text rl-about-muted", "Menunggu lirik lengkap…"));
+      return card;
+    }
+    const lines = this.lines.map((l) => l.text);
+    const key = lang + "\u0000" + lines.join("\n");
+    const load = (again = false) => {
+      if (again) summaries.delete(key);
+      if (!summaries.has(key)) {
+        const track = this.track ?? currentTrack(this.src);
+        const job = runWorkerTask("claude-summary", { lines, source: this.source, lang, title: track?.title ?? "", artist: track?.artist ?? "" });
+        summaries.set(key, job);
+        job.then((r) => r?.error && summaries.delete(key), () => summaries.delete(key));
+      }
+      card.replaceChildren(el("div", "rl-about-text rl-about-muted", lang === "id" ? "Membaca isi lagu…" : "Reading the song…"));
+      summaries.get(key).then((r) => {
+        if (!r || r.error) {
+          const retry = button("rl-btn", null, () => load(true));
+          retry.append(icon(ICON_RETRY), el("span", null, "Coba lagi"));
+          card.replaceChildren(el("div", "rl-about-text rl-about-error", r?.error ?? "Ringkasan gagal"), retry);
+          return;
+        }
+        const tags = el("div", "rl-about-tags");
+        tags.append(el("span", `rl-mood rl-mood-${r.mood}`, MOOD_LABELS[lang]?.[r.mood] ?? r.mood));
+        const meaning = MEANING_LABELS[lang]?.[r.meaning];
+        if (meaning) tags.append(el("span", "rl-mood rl-mood-meaning", meaning));
+        for (const t of r.themes ?? []) tags.append(el("span", "rl-theme", t));
+        card.replaceChildren(tags, el("div", "rl-about-text", r.summary));
+        card.title = r.cached ? "Tersimpan di komputer ini, tanpa panggilan API" : "Dibuat Claude Haiku 5.5 dan disimpan";
+      }, (e) => card.replaceChildren(el("div", "rl-about-text rl-about-error", e.message)));
+    };
+    load();
+    return card;
   }
 
   // The lines sent for translation, in order; also the context for a single-line retry.
@@ -436,6 +492,14 @@ class LyricsView {
     const main = el("div", "rl-row");
     if (this.japanese) main.append(seg, tr, edit);
     else main.append(tr);
+    if (usingClaude()) {
+      const about = button("rl-btn", null, () => chrome.storage.sync.set({ about: !settings.about }), {
+        "aria-pressed": String(settings.about),
+        title: "Ringkasan isi lagu, mood dan tema (Claude, sekali per lagu, disimpan)",
+      });
+      about.append(icon(ICON_INFO), el("span", null, "Tentang"));
+      main.append(about);
+    }
 
     const actions = el("div", "rl-row");
     for (const [label, delta, name] of [["A−", -FONT_STEP, "Smaller text"], ["A+", FONT_STEP, "Larger text"]]) {

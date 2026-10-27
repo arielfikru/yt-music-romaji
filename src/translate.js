@@ -203,8 +203,10 @@ export function translateSong(lines, lang, source = "ja", song = null, onStatus 
   }
 
   const pending = new Map(todo.map((l) => [l, Promise.withResolvers()]));
+  // A failed line stays failed until the user retries it, so a re-render (font size, a toggle)
+  // never sends it to Claude again on its own.
   for (const [l, d] of pending) {
-    d.promise.catch(() => { if (cache.get(prefix + l) === d.promise) cache.delete(prefix + l); });
+    d.promise.catch(() => {});
     cache.set(prefix + l, d.promise);
   }
 
@@ -220,7 +222,7 @@ export function translateSong(lines, lang, source = "ja", song = null, onStatus 
       localProgress(`Claude · ${STYLE_NAME[translationStyle]}`, 180_000, "Selesai", 0, todo.length);
       try {
         // Keep song storage stable; each target is sent with a small context window.
-        const { translations: out, cached, declinedLines, fallbackError } = await claudeSong(lyrics, lang, source, song, translationStyle, (progress) => {
+        const { translations: out, cached, declinedLines, fallbackError, freshLines = 0 } = await claudeSong(lyrics, lang, source, song, translationStyle, (progress) => {
           showProgress(progress);
           for (const { line, text } of progress.translations ?? []) {
             if (pending.has(line) && !done.has(line)) settle(line, text, `Translated by Claude Haiku 5.5${STYLE_LABEL[translationStyle] ?? ""}`);
@@ -233,7 +235,9 @@ export function translateSong(lines, lang, source = "ja", song = null, onStatus 
         const why = fallbackError || "Claude did not return a translation for this line";
         const skipped = todo.filter((l) => !done.has(l));
         for (const l of skipped) pending.get(l).reject(new Error(why));
-        const base = `Claude · ${STYLE_NAME[translationStyle]}${cached ? " · saved" : ""}`;
+        // Saved lines cost nothing; say how many actually needed an API call.
+        const saved = done.size - freshLines;
+        const base = `Claude · ${STYLE_NAME[translationStyle]}${cached ? " · tersimpan" : freshLines ? ` · ${freshLines} baru${saved > 0 ? `, ${saved} tersimpan` : ""}` : ""}`;
         report(
           skipped.length
             ? { state: "partial", text: `${base} · ${skipped.length} baris gagal`, detail: `Tekan ↻ di baris itu atau "Ulang semua".${declinedLines ? ` Claude declined ${declinedLines} unique lines.` : ""}${fallbackError ? ` ${fallbackError}` : ""}` }
@@ -312,7 +316,7 @@ export function retryLine(line, lang, source = "ja", { lines = [], avoid = "" } 
     sources.set(key, `Translated by Claude Haiku 5.5${STYLE_LABEL[translationStyle] ?? ""} (retried)`);
     return reply.text;
   });
-  job.catch(() => { if (cache.get(key) === job) cache.delete(key); });
+  job.catch(() => {});
   cache.set(key, job);
   return job;
 }

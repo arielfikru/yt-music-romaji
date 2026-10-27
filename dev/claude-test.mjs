@@ -46,7 +46,7 @@ globalThis.fetch = async (_url, init) => {
     return result instanceof Response ? result : Response.json(result);
   } finally { active--; }
 };
-const { translateWithClaude, retranslateLine, cacheEntries, importCache, clearCache } = await import("../src/claude.js");
+const { translateWithClaude, retranslateLine, summarizeSong, cacheEntries, importCache, clearCache } = await import("../src/claude.js");
 const translate = (lines, options = {}) => translateWithClaude({ lines, source: "ja", lang: "id", ...options });
 const songKey = (lines) => "tr:id:" + createHash("sha256").update("ja\n" + lines.join("\n")).digest("hex");
 const reset = () => {
@@ -198,6 +198,27 @@ assert.equal(line.text, "translated:拒否"); // a saved refusal does not block 
 console.log("poetic prompt, single-line retry with avoid, and retry-all passed");
 
 reset();
+const summaryAnswer = (out) => ({ ...answer(""), content: [{ type: "text", text: JSON.stringify(out) }] });
+respond = () => summaryAnswer({ summary: "Kata-kata acak tanpa cerita yang jelas.", mood: "absurd", meaning: "nonsense", themes: ["permainan bunyi", "", "warna", "x", "y"] });
+let about = await summarizeSong({ lines: ["ぴよぴよ", "", "くるくる"], source: "ja", lang: "id", title: "T" });
+assert.equal(about.mood, "absurd");
+assert.equal(about.meaning, "nonsense");
+assert.deepEqual(about.themes, ["permainan bunyi", "warna", "x"]);
+assert.equal(about.cached, false);
+assert.equal(calls.length, 1);
+assert.doesNotMatch(calls[0].system, /lyrics|song|copyright/i);
+assert.match(calls[0].system, /nonsense/);
+assert.equal(JSON.parse(calls[0].messages[0].content).text, "ぴよぴよ\nくるくる");
+about = await summarizeSong({ lines: ["ぴよぴよ", "くるくる"], source: "ja", lang: "id" });
+assert.equal(about.cached, true);
+assert.equal(calls.length, 1); // saved; no second request
+await summarizeSong({ lines: ["ぴよぴよ", "くるくる"], source: "ja", lang: "en" });
+assert.equal(calls.length, 2); // each language has its own summary
+respond = () => answer("", "refusal");
+assert.ok((await summarizeSong({ lines: ["拒否"], source: "ja", lang: "id" })).error);
+console.log("song summary with mood, nonsense meaning, cache and per-language keys passed");
+
+reset();
 await translate(["保存", "再利用"]);
 const exported = await cacheEntries();
 assert.equal(Object.keys(exported).filter((k) => k.startsWith("tr-line:")).length, 2);
@@ -220,7 +241,9 @@ globalThis.LanguageModel = {
   }; } }; },
 };
 let sentStyle;
+let sends = 0;
 chrome.runtime = { ...chrome.runtime, async sendMessage(message) {
+  sends++;
   sentStyle = message.style;
   return { translations: ["Claude translation", null], declinedLines: 1 };
 } };
@@ -235,6 +258,8 @@ assert.equal(settled[1].status, "rejected"); // no on-device fill-in when Claude
 assert.equal(sentStyle, "plain");
 assert.equal(nanoPrompt, undefined);
 tr.setTranslationStyle("plain");
+await assert.rejects(tr.translateLine("不足", "en")); // a re-render shows the failure again...
+assert.equal(sends, 1); // ...without asking Claude again
 assert.match(tr.translationSource("成功", "en"), /Claude/);
 assert.doesNotMatch(tr.translationSource("成功", "en"), /Poetic|Nano/);
 console.log("Claude-only translation leaves missing lines for retry, keeps in-flight style passed");

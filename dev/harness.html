@@ -19,6 +19,7 @@
     fontSize: Number(params.get("fontSize") || 16),
     synced: params.get("synced") === "1",
     translate: params.get("claude") === "1",
+    about: params.get("claude") === "1",
     lang: "id",
     titles: true,
   };
@@ -41,6 +42,11 @@
         if (msg.type === "claude-translate") {
           await new Promise((r) => setTimeout(r, 400));
           return { translations: msg.lines.map((l, i) => (i === 2 ? null : `terjemahan ${i + 1}`)), fallbackError: "" };
+        }
+        if (msg.type === "claude-summary") {
+          await new Promise((r) => setTimeout(r, 400));
+          return { summary: "Seseorang memulai hari dengan rutinitas kecil, lalu bertekad terus melangkah walau hujan, berharap esok lebih cerah.",
+            mood: "hopeful", meaning: "clear", themes: ["rutinitas", "harapan", "ketekunan"], cached: false };
         }
         if (msg.type === "claude-retranslate-line") {
           await new Promise((r) => setTimeout(r, 400));
