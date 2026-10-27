@@ -7,8 +7,10 @@ import Anthropic from "@anthropic-ai/sdk";
 const MODEL = "claude-haiku-5-5";
 // Bump both line and song caches when translation instructions change.
 const PROMPT_VERSION = 4;
-const promptVersion = (style) => style === "singable" ? 5 : PROMPT_VERSION;
+const STYLE_VERSIONS = { singable: 5, poetic: 6 };
+const promptVersion = (style) => STYLE_VERSIONS[style] ?? PROMPT_VERSION;
 const CONTEXT_LINES = 2;
+const SONG_LIMIT_MS = 180_000;
 const LINE_PREFIX = "tr-line:";
 const LINE_CONCURRENCY = 3;
 const lineInflight = new Map();
@@ -46,10 +48,12 @@ const STYLE_RULES = {
       : "Choose idiomatic wording suitable for singing. Do not force casual speech or a formal register; match the source's voice.",
   ],
   poetic: (lang) => [
-    `Use elegant, concise ${langName(lang)} diction and a gentle rhythm while preserving exactly the original meaning and imagery.`,
+    `Write it as a line of ${langName(lang)} verse, not a subtitle: lift the wording, never the content.`,
+    "Prefer evocative, lyrical word choices over flat everyday ones, and shape a pleasing rhythm with assonance, alliteration or a natural inversion where it reads well.",
+    "Keep exactly the original imagery and meaning: a richer word for the same thing is welcome; a new image, metaphor or emotion is not.",
     lang === "id"
-      ? "Use natural aku/kau wording, never saya/anda. Do not replace ordinary words with ornate or archaic expressions unless the original calls for them."
-      : "Use graceful, natural wording without embellishment or archaic expressions.",
+      ? "Use the register of Indonesian puisi: kau/aku, and where they fit naturally words like takkan, 'tuk, pun, nan, kelam, sirna, merindu, terhanyut. Never saya/anda, never chat slang like gak, udah, aja, banget."
+      : "Use the register of poetry: graceful, musical phrasing; no slang and no stiff or archaic thee/thou diction.",
   ],
 };
 
@@ -67,6 +71,7 @@ function systemPrompt(source, lang, style = "plain") {
     style === "singable"
       ? "Keep the core meaning while fitting a full vocal phrase. Do not optimize for the shortest translation; use equivalent wording to fill the phrase naturally without padding."
       : "Keep the translation compact and proportional to the target: a short phrase stays a short phrase. Do not expand it into a sentence or paragraph for dramatic effect.",
+    "If avoid is present, the reader rejected that earlier translation of text: return a noticeably different and better translation, not a light edit of it.",
     "Return only the translation in the translation field, without notes, summaries or explanations.",
   ].join(" ");
 }
@@ -171,20 +176,22 @@ const keepBadAnswer = (response) => chrome.storage.local.set({
   },
 });
 
-async function translateOne(api, line, source, lang, style, context, signal) {
+// `force` skips the saved line (also a saved refusal); `avoid` is a translation the reader rejected.
+async function translateOne(api, line, source, lang, style, context, signal, { force = false, avoid = "" } = {}) {
   const v = promptVersion(style);
   const key = LINE_PREFIX + lang + ":" + await sha256(JSON.stringify([v, source, style, line]));
-  if (!lineInflight.has(key)) {
+  if (force || !lineInflight.has(key)) {
     const job = (async () => {
       const { [key]: stored } = await chrome.storage.local.get(key);
-      if (stored?.v === v && usable(stored.text)) return { text: stored.text, cached: true };
-      if (stored?.v === v && stored.declined) return { text: null, declined: true, cached: true };
+      if (!force && stored?.v === v && usable(stored.text)) return { text: stored.text, cached: true };
+      if (!force && stored?.v === v && stored.declined) return { text: null, declined: true, cached: true };
       const response = await api.messages.create({
         model: MODEL,
         max_tokens: 2048,
         system: systemPrompt(source, lang, style),
-        output_config: { effort: "low", format: { type: "json_schema", schema: SCHEMA } },
-        messages: [{ role: "user", content: JSON.stringify({ text: line, ...context }) }],
+        // Poetic word choice benefits from a little more thought than a plain rendering.
+        output_config: { effort: style === "poetic" ? "medium" : "low", format: { type: "json_schema", schema: SCHEMA } },
+        messages: [{ role: "user", content: JSON.stringify({ text: line, ...context, ...(avoid ? { avoid } : {}) }) }],
       }, { signal });
       let text;
       try {
@@ -202,31 +209,34 @@ async function translateOne(api, line, source, lang, style, context, signal) {
       return { text, cached: false };
     })();
     lineInflight.set(key, job);
-    job.finally(() => lineInflight.delete(key)).catch(() => {});
+    job.finally(() => lineInflight.get(key) === job && lineInflight.delete(key)).catch(() => {});
+    if (force) return job;
   }
   return lineInflight.get(key);
 }
 
-async function callClaude(lines, source, lang, style, onProgress, parentSignal) {
+const contextFor = (lines, i) => ({
+  before: lines.slice(Math.max(0, i - CONTEXT_LINES), i),
+  after: lines.slice(i + 1, i + 1 + CONTEXT_LINES),
+});
+
+async function callClaude(lines, source, lang, style, onProgress, parentSignal, force = false) {
   const api = await client();
   const contexts = new Map();
   lines.forEach((line, i) => {
     if (!line.trim() || contexts.has(line)) return;
     // The first occurrence supplies context; all exact repeats reuse its result.
-    contexts.set(line, {
-      before: lines.slice(Math.max(0, i - CONTEXT_LINES), i),
-      after: lines.slice(i + 1, i + 1 + CONTEXT_LINES),
-    });
+    contexts.set(line, contextFor(lines, i));
   });
   const unique = [...contexts.keys()];
   const startedAt = Date.now();
-  const deadline = startedAt + 90_000;
-  const signal = parentSignal ? AbortSignal.any([parentSignal, AbortSignal.timeout(90_000)]) : AbortSignal.timeout(90_000);
+  const deadline = startedAt + SONG_LIMIT_MS;
+  const signal = parentSignal ? AbortSignal.any([parentSignal, AbortSignal.timeout(SONG_LIMIT_MS)]) : AbortSignal.timeout(SONG_LIMIT_MS);
   const results = new Map();
   let next = 0;
   let serviceError = "";
   const report = () => onProgress({ label: `Claude · ${STYLE_NAMES[style]}`, startedAt, deadline,
-    next: "Penerjemah lokal", completed: results.size, total: unique.length,
+    next: "Tombol coba lagi", completed: results.size, total: unique.length,
     translations: [...results].filter(([, result]) => result.text).map(([line, result]) => ({ line, text: result.text })),
   });
   report();
@@ -236,7 +246,7 @@ async function callClaude(lines, source, lang, style, onProgress, parentSignal) 
     while (next < unique.length && !serviceError && !signal.aborted) {
       const line = unique[next++];
       try {
-        results.set(line, await translateOne(api, line, source, lang, style, contexts.get(line), signal));
+        results.set(line, await translateOne(api, line, source, lang, style, contexts.get(line), signal, { force }));
       } catch (e) {
         results.set(line, { text: null, error: explain(e) });
         if (e instanceof Anthropic.APIError || e instanceof Anthropic.APIConnectionError) serviceError = explain(e);
@@ -247,14 +257,15 @@ async function callClaude(lines, source, lang, style, onProgress, parentSignal) 
   return {
     t: lines.map((l) => l.trim() ? results.get(l)?.text ?? null : ""),
     declined: [...results.values()].filter((r) => r.declined).length,
-    error: (signal.aborted ? "Claude reached the time limit; remaining lines use the on-device translator" : serviceError) || [...results.values()].find((r) => r.error)?.error || "",
+    error: (signal.aborted ? "Claude reached the time limit; retry the remaining lines" : serviceError) || [...results.values()].find((r) => r.error)?.error || "",
     cached: unique.every((l) => results.get(l)?.cached),
   };
 }
 
 // Keep the song cache format for export/import, with a separate cache for individual lines.
 // Earlier prompts can over-expand text, so only this prompt version is reused.
-export async function translateWithClaude({ lines, source, lang, title, artist, style = "plain" }, { onProgress = () => {}, signal } = {}) {
+// `force` translates every line again, ignoring saved song and line results.
+export async function translateWithClaude({ lines, source, lang, title, artist, style = "plain", force = false }, { onProgress = () => {}, signal } = {}) {
   if (!STYLES.includes(style)) style = "plain";
   const key = await songKey(lines, source, lang, style);
   if (!translationProgress.has(key)) translationProgress.set(key, { listeners: new Set(), latest: null });
@@ -262,10 +273,10 @@ export async function translateWithClaude({ lines, source, lang, title, artist, 
   progress.listeners.add(onProgress);
   if (progress.latest) onProgress(progress.latest);
   const report = (update) => { progress.latest = update; for (const listener of progress.listeners) listener(update); };
-  if (!inflight.has(key)) {
+  if (force || !inflight.has(key)) {
     const job = (async () => {
       const { [key]: stored } = await chrome.storage.local.get(key);
-      if (Array.isArray(stored?.t) && stored.t.length === lines.length &&
+      if (!force && Array.isArray(stored?.t) && stored.t.length === lines.length &&
           stored.v === promptVersion(style) && stored.t.every((t, i) => !lines[i].trim() || usable(t))) {
         await setStatus(null, `Loaded ${lines.length} saved lines (${STYLE_NAMES[style]}). No API call.`, "cached");
         return { t: stored.t, cached: true, declined: 0, error: "" };
@@ -277,7 +288,8 @@ export async function translateWithClaude({ lines, source, lang, title, artist, 
         await chrome.storage.local.remove(["claudeLastBadAnswer"]);
       }
       await setStatus(null, `Translating ${new Set(lines.filter((l) => l.trim())).size} unique lines (${STYLE_NAMES[style]})…`, "working");
-      const result = await callClaude(lines, source, lang, style, report, signal);
+      if (force) await chrome.storage.local.remove([key]);
+      const result = await callClaude(lines, source, lang, style, report, signal, force);
       const count = result.t.filter(Boolean).length;
       await setStatus(!result.error, result.error || `Translated ${count}/${lines.length} lines, ${STYLE_NAMES[style]}`);
       // Transient errors are never stored as a completed song. Successful individual lines
@@ -291,7 +303,7 @@ export async function translateWithClaude({ lines, source, lang, title, artist, 
       return result;
     })();
     inflight.set(key, job);
-    job.finally(() => inflight.delete(key)).catch(() => {});
+    job.finally(() => inflight.get(key) === job && inflight.delete(key)).catch(() => {});
   }
   try {
     const { t, cached, declined, error } = await inflight.get(key);
@@ -302,6 +314,28 @@ export async function translateWithClaude({ lines, source, lang, title, artist, 
   } finally {
     progress.listeners.delete(onProgress);
     if (!progress.listeners.size) translationProgress.delete(key);
+  }
+}
+
+// One line translated again on request, with its neighbors as context. `lines` is the same
+// list the song was translated with, so the saved song (now stale) can be dropped.
+export async function retranslateLine({ line, lines = [], source, lang, style = "plain", avoid = "" }, { signal } = {}) {
+  if (!STYLES.includes(style)) style = "plain";
+  const i = lines.indexOf(line);
+  try {
+    const api = await client();
+    await setStatus(null, `Retranslating 1 line (${STYLE_NAMES[style]})…`, "working");
+    const result = await translateOne(api, line, source, lang, style, i < 0 ? {} : contextFor(lines, i), signal, { force: true, avoid });
+    if (lines.length) await chrome.storage.local.remove([await songKey(lines, source, lang, style)]);
+    if (result.declined) {
+      await setStatus(false, "Claude declined this line");
+      return { error: "Claude declined this line", declined: true };
+    }
+    await setStatus(true, `Retranslated 1 line, ${STYLE_NAMES[style]}`);
+    return { text: result.text };
+  } catch (e) {
+    await setStatus(false, explain(e));
+    return { error: explain(e) };
   }
 }
 
@@ -452,7 +486,7 @@ export async function cacheEntries() {
 export async function importCache(entries) {
   const valid = Object.entries(entries ?? {}).filter(
     ([k, v]) => (k.startsWith(PREFIX) && Array.isArray(v?.t)) ||
-      (k.startsWith(LINE_PREFIX) && [PROMPT_VERSION, promptVersion("singable")].includes(v?.v) && (usable(v.text) || v.declined === true)) || (k.startsWith(PARSE_PREFIX) && Array.isArray(v?.lookups)) ||
+      (k.startsWith(LINE_PREFIX) && [PROMPT_VERSION, ...Object.values(STYLE_VERSIONS)].includes(v?.v) && (usable(v.text) || v.declined === true)) || (k.startsWith(PARSE_PREFIX) && Array.isArray(v?.lookups)) ||
       (k.startsWith(NAME_PREFIX) && v?.v === NAME_VERSION && typeof v.original === "string" && usable(v.text))
   );
   await chrome.storage.local.set(Object.fromEntries(valid));

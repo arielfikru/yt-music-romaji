@@ -18,7 +18,7 @@
     mode: params.get("mode") || "below",
     fontSize: Number(params.get("fontSize") || 16),
     synced: params.get("synced") === "1",
-    translate: false,
+    translate: params.get("claude") === "1",
     lang: "id",
     titles: true,
   };
@@ -36,7 +36,18 @@
     runtime: {
       id: "harness",
       getURL: (p) => "/dist/" + p,
-      sendMessage: async () => ({ lrc: LRC }),
+      // ?claude=1 fakes Claude: one line comes back missing, retries return a new version.
+      sendMessage: async (msg) => {
+        if (msg.type === "claude-translate") {
+          await new Promise((r) => setTimeout(r, 400));
+          return { translations: msg.lines.map((l, i) => (i === 2 ? null : `terjemahan ${i + 1}`)), fallbackError: "" };
+        }
+        if (msg.type === "claude-retranslate-line") {
+          await new Promise((r) => setTimeout(r, 400));
+          return { text: `versi baru (avoid: ${msg.avoid || "-"})` };
+        }
+        return { lrc: LRC };
+      },
     },
     storage: {
       sync: {
@@ -50,7 +61,7 @@
       },
       local: {
         // One sample hand correction, to show how edited lines look.
-        data: { overrides: { "東京の空はとても青い": "tokyo no sora wa totemo aoi (edited)" } },
+        data: { ...(params.get("claude") === "1" ? { claudeKey: "fake" } : {}), overrides: { "東京の空はとても青い": "tokyo no sora wa totemo aoi (edited)" } },
         get(key) { return Promise.resolve({ [key]: this.data[key] }).then((r) => (arguments[1]?.(r), r)); },
         set(obj) { Object.assign(this.data, obj); return Promise.resolve(); },
       },

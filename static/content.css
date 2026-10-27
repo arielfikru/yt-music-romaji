@@ -133,6 +133,30 @@
   margin-top: 2px;
   color: rgba(140, 200, 255, 0.75);
 }
+.rl-tr-loading { color: rgba(140, 200, 255, 0.4); }
+.rl-tr-failed { color: rgba(255, 155, 155, 0.75); font-style: italic; }
+/* ↻ appears on hover for a translated line, always for a failed one */
+.rl-tr-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.75);
+  font: 500 12px/1.2 inherit;
+  font-style: normal;
+  vertical-align: middle;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.rl-tr-retry svg { width: 14px; height: 14px; fill: currentColor; }
+.rl-line:hover .rl-tr-retry, .rl-tr-retry:focus-visible, .rl-tr-retry-shown { opacity: 1; }
+.rl-tr-retry:hover { background: rgba(255, 255, 255, 0.16); color: #fff; }
+@media (hover: none) { .rl-tr-retry { opacity: 0.6; } }
 
 /* synced view */
 .rl-synced .rl-line {

@@ -4,7 +4,8 @@ import { progressText, runWorkerTask, withTimeout } from "./job-client.js";
 // - Claude, when an API key is set in the popup: one target line plus nearby context per request, with repeated lines reused (see claude.js).
 // - English: Gemini Nano (Prompt API) translates the song in chunks with surrounding lines as context.
 // - Indonesian, or when Gemini Nano is unavailable: Chrome's Translator API, line by line.
-// The on-device engines also cover any song Claude fails on.
+// With a Claude key, Claude alone translates: lines it misses are marked failed and can be
+// retried, never filled in by an on-device engine (mixed engines read inconsistently).
 
 const translators = new Map(); // target language -> Promise<Translator>
 const cache = new Map(); // lang + line -> Promise<string>
@@ -123,7 +124,7 @@ const keyPrefix = (lang, source) => source + ">" + lang + "/" + style + "\u0000"
 
 // ---- Claude (via the background worker) ----
 
-async function claudeSong(lines, lang, source, song, translationStyle, onProgress) {
+async function claudeSong(lines, lang, source, song, translationStyle, onProgress, force) {
   const reply = await runWorkerTask("claude-translate", {
     lines,
     source,
@@ -131,6 +132,7 @@ async function claudeSong(lines, lang, source, song, translationStyle, onProgres
     style: translationStyle,
     title: song?.title,
     artist: song?.artist,
+    force,
   }, onProgress);
   // No reply at all: the background worker is an older build without Claude (reload the extension).
   if (!reply?.translations) {
@@ -167,7 +169,8 @@ const STYLE_NAME = { plain: "Normal", singable: "Translyrics", poetic: "Poetic" 
 // Starts translating unique lines. Fills the cache that translateLine reads.
 // `song` ({ title, artist }) is stored as local metadata only. `onStatus` is called
 // with the song's status now (if known) and whenever it changes.
-export function translateSong(lines, lang, source = "ja", song = null, onStatus = () => {}) {
+// `force` asks Claude for every line again (the "retry all" button).
+export function translateSong(lines, lang, source = "ja", song = null, onStatus = () => {}, force = false) {
   const translationStyle = style;
   const prefix = keyPrefix(lang, source);
   const lyrics = lines.filter((l) => l.trim()); // keep the original order; background deduplicates requests
@@ -189,6 +192,10 @@ export function translateSong(lines, lang, source = "ja", song = null, onStatus 
     const startedAt = Date.now();
     showProgress({ label, startedAt, deadline: startedAt + ms, next, completed, total });
   };
+  if (force) {
+    for (const l of lyrics) cache.delete(prefix + l);
+    songStatus.delete(statusKey);
+  }
   const todo = [...new Set(lyrics)].filter((l) => !cache.has(prefix + l));
   if (!todo.length) {
     if (songStatus.has(statusKey)) onStatus(songStatus.get(statusKey));
@@ -202,16 +209,15 @@ export function translateSong(lines, lang, source = "ja", song = null, onStatus 
   }
 
   const done = new Set();
-  let fallbackWhy = ""; // why Claude didn't translate a line, added to the on-device lines' hover text
   const settle = (l, text, engine) => {
-    sources.set(prefix + l, engine + fallbackWhy);
+    sources.set(prefix + l, engine);
     pending.get(l).resolve(text);
     done.add(l);
   };
   (async () => {
     await claudeLoaded;
     if (claudeOn) {
-      localProgress(`Claude · ${STYLE_NAME[translationStyle]}`, 90_000, "Penerjemah lokal", 0, todo.length);
+      localProgress(`Claude · ${STYLE_NAME[translationStyle]}`, 180_000, "Tombol coba lagi", 0, todo.length);
       try {
         // Keep song storage stable; each target is sent with a small context window.
         const { translations: out, cached, declinedLines, fallbackError } = await claudeSong(lyrics, lang, source, song, translationStyle, (progress) => {
@@ -219,17 +225,18 @@ export function translateSong(lines, lang, source = "ja", song = null, onStatus 
           for (const { line, text } of progress.translations ?? []) {
             if (pending.has(line) && !done.has(line)) settle(line, text, `Translated by Claude Haiku 5.5${STYLE_LABEL[translationStyle] ?? ""}`);
           }
-        });
+        }, force);
         lyrics.forEach((l, j) => {
-          if (!pending.has(l) || done.has(l) || out[j] == null) return; // repeats keep the first; skipped lines go on-device
+          if (!pending.has(l) || done.has(l) || out[j] == null) return; // repeats keep the first; skipped lines get a retry button
           settle(l, out[j], `Translated by Claude Haiku 5.5${STYLE_LABEL[translationStyle] ?? ""}`);
         });
-        fallbackWhy = fallbackError ? ` (Claude failed: ${fallbackError})` : " (Claude did not return a translation for this line)";
-        const skipped = todo.filter((l) => !done.has(l)).length;
+        const why = fallbackError || "Claude did not return a translation for this line";
+        const skipped = todo.filter((l) => !done.has(l));
+        for (const l of skipped) pending.get(l).reject(new Error(why));
         const base = `Claude · ${STYLE_NAME[translationStyle]}${cached ? " · saved" : ""}`;
         report(
-          skipped
-            ? { state: "partial", text: `${base} · ${skipped} on-device`, detail: `${skipped} lines need the on-device translator.${declinedLines ? ` Claude declined ${declinedLines} unique lines.` : ""}${fallbackError ? ` ${fallbackError}` : ""}` }
+          skipped.length
+            ? { state: "partial", text: `${base} · ${skipped.length} baris gagal`, detail: `Tekan ↻ di baris itu atau "Ulang semua".${declinedLines ? ` Claude declined ${declinedLines} unique lines.` : ""}${fallbackError ? ` ${fallbackError}` : ""}` }
             : {
                 state: "ok",
                 text: base,
@@ -237,18 +244,11 @@ export function translateSong(lines, lang, source = "ja", song = null, onStatus 
               }
         );
       } catch (e) {
-        console.warn("[romaji-lyrics] Claude translation failed, using on-device:", e.message);
-        fallbackWhy = ` (Claude failed: ${e.message})`;
-        report(
-          e.declined
-            ? {
-                state: "partial",
-                text: "Claude declined · on-device",
-                detail: "Claude did not return a translation; trying the on-device translator.",
-              }
-            : { state: "failed", text: "Claude failed · using on-device", detail: e.message }
-        );
+        console.warn("[romaji-lyrics] Claude translation failed:", e.message);
+        for (const [l, d] of pending) if (!done.has(l)) d.reject(e);
+        report({ state: "failed", text: e.declined ? "Claude declined" : "Claude failed", detail: `${e.message}. Tekan "Ulang semua" untuk mencoba lagi.` });
       }
+      return;
     } else {
       report({ state: "device", text: "On-device translation", detail: "Add a Claude API key in the extension popup for better translations" });
     }
@@ -290,7 +290,7 @@ export function translateSong(lines, lang, source = "ja", song = null, onStatus 
     }
     const failed = todo.filter((l) => !done.has(l)).length;
     if (failed) report({ state: "failed", text: `${failed} lines unavailable`, detail: "Claude and the on-device translator could not translate these lines. Other translations are kept." });
-    else report({ state: claudeOn ? "partial" : "device", text: claudeOn ? "Selesai · Claude + penerjemah lokal" : "Selesai · penerjemah lokal", detail: "Semua baris tersedia" });
+    else report({ state: "device", text: "Selesai · penerjemah lokal", detail: "Semua baris tersedia" });
   })().catch((e) => {
     for (const [l, d] of pending) if (!done.has(l)) d.reject(e);
     report({ state: "failed", text: "Translation failed", detail: e.message });
@@ -299,6 +299,23 @@ export function translateSong(lines, lang, source = "ja", song = null, onStatus 
 
 // Hover text for a translated line: which engine made it, and why Claude didn't when it fell back.
 export const translationSource = (line, lang, source = "ja") => sources.get(keyPrefix(lang, source) + line) ?? "";
+
+// Translates one line again. With Claude, `avoid` (the current text) asks for a different
+// rendering and `lines` gives neighboring context; on-device it simply runs again.
+export function retryLine(line, lang, source = "ja", { lines = [], avoid = "" } = {}) {
+  const key = keyPrefix(lang, source) + line;
+  cache.delete(key);
+  if (!claudeOn) return translateLine(line, lang, source);
+  const translationStyle = style;
+  const job = runWorkerTask("claude-retranslate-line", { line, lines, source, lang, style: translationStyle, avoid }).then((reply) => {
+    if (!reply?.text) throw new Error(reply?.error ?? "Claude did not return a translation for this line");
+    sources.set(key, `Translated by Claude Haiku 5.5${STYLE_LABEL[translationStyle] ?? ""} (retried)`);
+    return reply.text;
+  });
+  job.catch(() => { if (cache.get(key) === job) cache.delete(key); });
+  cache.set(key, job);
+  return job;
+}
 
 export function translateLine(line, lang, source = "ja") {
   const key = keyPrefix(lang, source) + line;

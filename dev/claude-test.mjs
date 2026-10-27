@@ -46,7 +46,7 @@ globalThis.fetch = async (_url, init) => {
     return result instanceof Response ? result : Response.json(result);
   } finally { active--; }
 };
-const { translateWithClaude, cacheEntries, importCache, clearCache } = await import("../src/claude.js");
+const { translateWithClaude, retranslateLine, cacheEntries, importCache, clearCache } = await import("../src/claude.js");
 const translate = (lines, options = {}) => translateWithClaude({ lines, source: "ja", lang: "id", ...options });
 const songKey = (lines) => "tr:id:" + createHash("sha256").update("ja\n" + lines.join("\n")).digest("hex");
 const reset = () => {
@@ -68,7 +68,7 @@ assert.equal(storage.claudeStatus.ok, true);
 assert.ok(peak <= 3);
 assert.equal(peak, 3);
 assert.deepEqual(liveProgress.map((p) => p.completed), [0, 1, 2, 3, 4]);
-assert.ok(liveProgress.every((p) => p.total === 4 && p.deadline - p.startedAt === 90_000));
+assert.ok(liveProgress.every((p) => p.total === 4 && p.deadline - p.startedAt === 180_000));
 assert.equal(liveProgress[1].translations.length, 1);
 for (const request of calls) {
   assert.doesNotMatch(request.system, /lyrics|song|copyright/i);
@@ -171,6 +171,33 @@ assert.deepEqual(result.translations, [null, "translated:一", "translated:二",
 console.log("API failure stops the queue while retaining completed translations passed");
 
 reset();
+const song = ["前の行", "やり直し", "後の行"];
+await translate(song, { style: "poetic" });
+assert.equal(calls.length, 3);
+assert.equal(calls[0].output_config.effort, "medium");
+assert.match(calls[0].system, /verse/);
+assert.doesNotMatch(calls[0].system, /lyrics|song|copyright/i);
+respond = (text) => answer(`again:${text}`);
+let line = await retranslateLine({ line: "やり直し", lines: song, source: "ja", lang: "id", style: "poetic", avoid: "translated:やり直し" });
+assert.equal(line.text, "again:やり直し");
+assert.equal(calls.length, 4);
+const retryInput = JSON.parse(calls[3].messages[0].content);
+assert.deepEqual(retryInput, { text: "やり直し", before: ["前の行"], after: ["後の行"], avoid: "translated:やり直し" });
+result = await translate(song, { style: "poetic" });
+assert.equal(calls.length, 4); // stale song dropped; rebuilt from saved lines without API calls
+assert.deepEqual(result.translations, ["translated:前の行", "again:やり直し", "translated:後の行"]);
+result = await translate(song, { style: "poetic", force: true });
+assert.equal(calls.length, 7);
+assert.deepEqual(result.translations, song.map((t) => `again:${t}`));
+respond = () => answer("", "refusal");
+line = await retranslateLine({ line: "拒否", lines: [], source: "ja", lang: "id" });
+assert.equal(line.declined, true);
+respond = (text) => answer(`translated:${text}`);
+line = await retranslateLine({ line: "拒否", lines: [], source: "ja", lang: "id" });
+assert.equal(line.text, "translated:拒否"); // a saved refusal does not block a retry
+console.log("poetic prompt, single-line retry with avoid, and retry-all passed");
+
+reset();
 await translate(["保存", "再利用"]);
 const exported = await cacheEntries();
 assert.equal(Object.keys(exported).filter((k) => k.startsWith("tr-line:")).length, 2);
@@ -202,15 +229,15 @@ tr.setTranslationStyle("plain");
 tr.translateSong(["成功", "不足"], "en");
 const pending = [tr.translateLine("成功", "en"), tr.translateLine("不足", "en")];
 tr.setTranslationStyle("poetic"); // changed while the asynchronous request is starting
-assert.deepEqual(await Promise.all(pending), ["Claude translation", "device translation"]);
+const settled = await Promise.allSettled(pending);
+assert.equal(settled[0].value, "Claude translation");
+assert.equal(settled[1].status, "rejected"); // no on-device fill-in when Claude is on
 assert.equal(sentStyle, "plain");
-assert.doesNotMatch(nanoPrompt, /成功/);
-assert.match(nanoPrompt, /不足/);
+assert.equal(nanoPrompt, undefined);
 tr.setTranslationStyle("plain");
 assert.match(tr.translationSource("成功", "en"), /Claude/);
 assert.doesNotMatch(tr.translationSource("成功", "en"), /Poetic|Nano/);
-assert.match(tr.translationSource("不足", "en"), /Gemini Nano/);
-console.log("partial fallback preserves Claude results and in-flight style passed");
+console.log("Claude-only translation leaves missing lines for retry, keeps in-flight style passed");
 
 tr.resetTranslations();
 let finishStream;

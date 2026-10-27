@@ -7,6 +7,7 @@ import {
   detectLanguage,
   prepareEngine,
   resetTranslations,
+  retryLine,
   setTranslationStyle,
   translateLine,
   translateSong,
@@ -92,6 +93,7 @@ function icon(d) {
 }
 const ICON_COPY = "M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z";
 const ICON_EDIT = "M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z";
+const ICON_RETRY = "M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z";
 const ICON_TRANSLATE = "m12.87 15.07-2.54-2.51.03-.03A17.52 17.52 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7 1.62-4.33L19.12 17h-3.24z";
 
 function currentTrack(src = null) {
@@ -231,15 +233,7 @@ class LyricsView {
 
     this.translating = settings.translate && this.source !== settings.lang;
     setTranslationStyle(settings.style);
-    if (this.translating) {
-      translateSong(
-        this.lines.map((l) => l.text).filter((t) => this.needsTranslation(t)),
-        settings.lang,
-        this.source,
-        this.track ?? currentTrack(this.src),
-        (status) => this.paintTrStatus(status)
-      );
-    }
+    if (this.translating) this.startTranslation();
     this.rows = this.lines.map((line) => this.row(tk, line));
     const body = el("div", "rl-body");
     body.append(...this.rows);
@@ -265,18 +259,64 @@ class LyricsView {
       r.append(ro);
     }
     if (this.translating && this.needsTranslation(text)) {
-      const tr = el("div", "rl-tr", "…");
-      translateLine(text, settings.lang, this.source).then(
-        (t) => {
-          tr.textContent = t;
-          tr.title = translationSource(text, settings.lang, this.source);
-        },
-        () => tr.remove()
-      );
+      const tr = el("div", "rl-tr");
+      this.fillTranslation(tr, text, translateLine(text, settings.lang, this.source));
       r.append(tr);
     }
     if (this.synced) this.makeSeekable(r, line);
     return r;
+  }
+
+  // The lines sent for translation, in order; also the context for a single-line retry.
+  get trLines() {
+    return this.lines.map((l) => l.text).filter((t) => this.needsTranslation(t));
+  }
+
+  startTranslation(force = false) {
+    translateSong(this.trLines, settings.lang, this.source, this.track ?? currentTrack(this.src),
+      (status) => this.paintTrStatus(status), force);
+  }
+
+  // Shows a line's translation once `job` settles, with a ↻ to ask for another version.
+  // A failed line stays visible with its reason instead of silently disappearing.
+  fillTranslation(tr, text, job) {
+    const lang = settings.lang;
+    const token = (tr.rlJob = {}); // a newer retry wins over a slower earlier answer
+    tr.className = "rl-tr rl-tr-loading";
+    tr.replaceChildren(el("span", "rl-tr-text", "…"));
+    tr.title = "";
+    const retry = (failed) => {
+      const b = button("rl-tr-retry" + (failed ? " rl-tr-retry-shown" : ""), null, (e) => {
+        e.stopPropagation(); // don't seek the song
+        const avoid = failed ? "" : tr.querySelector(".rl-tr-text")?.textContent ?? "";
+        const again = retryLine(text, lang, this.source, { lines: this.trLines, avoid });
+        // Repeats of this line (a chorus) show the new version too.
+        this.rows.forEach((row, i) => {
+          const other = this.lines[i].text === text && row.querySelector(".rl-tr");
+          if (other) this.fillTranslation(other, text, again);
+        });
+      }, {
+        title: failed ? "Coba terjemahkan lagi" : "Terjemahan lain untuk baris ini",
+        "aria-label": failed ? "Retry translation" : "Retranslate this line",
+      });
+      b.append(icon(ICON_RETRY));
+      if (failed) b.append(el("span", null, "Coba lagi"));
+      return b;
+    };
+    job.then(
+      (t) => {
+        if (tr.rlJob !== token) return;
+        tr.className = "rl-tr";
+        tr.replaceChildren(el("span", "rl-tr-text", t), retry(false));
+        tr.title = translationSource(text, lang, this.source);
+      },
+      (e) => {
+        if (tr.rlJob !== token) return;
+        tr.className = "rl-tr rl-tr-failed";
+        tr.replaceChildren(el("span", "rl-tr-text", "Belum diterjemahkan"), retry(true));
+        tr.title = e?.message ?? "";
+      }
+    );
   }
 
   makeSeekable(r, line) {
@@ -418,6 +458,13 @@ class LyricsView {
       const trRow = el("div", "rl-row rl-tr-row");
       if (usingClaude()) trRow.append(this.segmented("style", TR_STYLES, "Translation style"));
       trRow.append(this.segmented("lang", TR_LANGS, "Translate into"));
+      const again = button("rl-btn", null, () => this.retryAll(), {
+        title: usingClaude()
+          ? "Terjemahkan ulang semua baris dengan Claude (memanggil API lagi untuk setiap baris unik)"
+          : "Terjemahkan ulang semua baris",
+      });
+      again.append(icon(ICON_RETRY), el("span", null, "Ulang semua"));
+      trRow.append(again);
       this.trChip = el("span", "rl-chip rl-tr-status");
       this.trChip.setAttribute("role", "status");
       trRow.append(this.trChip);
@@ -475,6 +522,14 @@ class LyricsView {
       row.append(off);
     }
     return row;
+  }
+
+  retryAll() {
+    this.startTranslation(true);
+    for (const [i, line] of this.lines.entries()) {
+      const tr = this.rows?.[i]?.querySelector(".rl-tr");
+      if (tr) this.fillTranslation(tr, line.text, translateLine(line.text, settings.lang, this.source));
+    }
   }
 
   async toggleTranslate(btn) {

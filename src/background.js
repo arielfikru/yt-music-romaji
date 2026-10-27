@@ -1,4 +1,4 @@
-import { cacheEntries, checkKey, clearCache, importCache, romanizeMetadata, translateWithClaude } from "./claude.js";
+import { cacheEntries, checkKey, clearCache, importCache, retranslateLine, romanizeMetadata, translateWithClaude } from "./claude.js";
 import { clearLookupCache, findLyrics } from "./lookup.js";
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -7,6 +7,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     "find-lyrics": () => findLyrics(msg, false),
     "claude-romanize-names": () => romanizeMetadata(msg),
     "claude-translate": () => translateWithClaude(msg),
+    "claude-retranslate-line": () => retranslateLine(msg),
     "claude-check-key": () => checkKey(msg.key),
     "claude-cache-export": () => cacheEntries().then((entries) => ({ entries })),
     "claude-cache-import": () => importCache(msg.entries).then((count) => ({ count })),
@@ -32,6 +33,7 @@ chrome.runtime.onConnect.addListener((port) => {
     try {
       let result;
       if (msg.type === "claude-translate") result = await translateWithClaude(msg, options);
+      else if (msg.type === "claude-retranslate-line") result = await retranslateLine(msg, options);
       else if (["find-lyrics", "find-synced-lyrics"].includes(msg.type)) result = await findLyrics(msg, msg.type === "find-synced-lyrics", options);
       else result = { error: "Unknown background task" };
       send({ type: "result", result });

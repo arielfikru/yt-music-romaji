@@ -13,7 +13,7 @@ export function runWorkerTask(type, payload, onProgress = () => {}, signal) {
       error ? reject(error) : resolve(result);
     };
     const cancel = () => finish(new Error("Request cancelled"));
-    const timer = setTimeout(() => finish(new Error("Background task exceeded its time limit")), type === "claude-translate" ? 95_000 : 50_000);
+    const timer = setTimeout(() => finish(new Error("Background task exceeded its time limit")), type === "claude-translate" ? 185_000 : 50_000);
     port.onMessage.addListener((message) => {
       if (message.type === "progress") onProgress(message.progress);
       else if (message.type === "result") finish(null, message.result);
